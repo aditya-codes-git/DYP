@@ -1,0 +1,209 @@
+"use client";
+
+import { motion } from "framer-motion";
+import { Circle } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+function ElegantShape({
+    className,
+    delay = 0,
+    width = 400,
+    height = 100,
+    rotate = 0,
+    gradient = "from-slate-900/[0.04]",
+}) {
+    return (
+        <motion.div
+            initial={{
+                opacity: 0,
+                y: -150,
+                rotate: rotate - 15,
+            }}
+            animate={{
+                opacity: 1,
+                y: 0,
+                rotate: rotate,
+            }}
+            transition={{
+                duration: 2.4,
+                delay,
+                ease: [0.23, 0.86, 0.39, 0.96],
+                opacity: { duration: 1.2 },
+            }}
+            className={cn("absolute", className)}
+        >
+            <motion.div
+                animate={{
+                    y: [0, 15, 0],
+                }}
+                transition={{
+                    duration: 12,
+                    repeat: Number.POSITIVE_INFINITY,
+                    ease: "easeInOut",
+                }}
+                style={{
+                    width,
+                    height,
+                    willChange: "transform",
+                    transform: "translateZ(0)",
+                }}
+                className="relative"
+            >
+                <div
+                    className={cn(
+                        "absolute inset-0 rounded-full",
+                        "bg-gradient-to-r to-transparent",
+                        gradient,
+                        "border-2 border-slate-900/[0.05]",
+                        "shadow-[0_8px_32px_0_rgba(0,0,0,0.03)]",
+                        "after:absolute after:inset-0 after:rounded-full",
+                        "after:bg-[radial-gradient(circle_at_50%_50%,rgba(0,0,0,0.02),transparent_70%)]"
+                    )}
+                />
+            </motion.div>
+        </motion.div>
+    );
+}
+
+function HeroGeometric({
+    badge = "Design Collective",
+    title1 = "Elevate Your Digital Vision",
+    title2 = "Crafting Exceptional Websites",
+    description = "Crafting exceptional digital experiences through innovative design and cutting-edge technology.",
+    children
+}) {
+    const fadeUpVariants = {
+        hidden: { opacity: 0, y: 30 },
+        visible: (i) => ({
+            opacity: 1,
+            y: 0,
+            transition: {
+                duration: 1,
+                delay: 0.5 + i * 0.2,
+                ease: [0.25, 0.4, 0.25, 1],
+            },
+        }),
+    };
+
+    return (
+        <div 
+            className="relative min-h-[85vh] w-full flex items-center justify-center overflow-hidden bg-[#f8fafc]"
+            style={{ isolation: "isolate" }}
+        >
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/[0.03] via-transparent to-rose-500/[0.03] blur-3xl pointer-events-none" />
+
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                <ElegantShape
+                    delay={0.3}
+                    width={600}
+                    height={140}
+                    rotate={12}
+                    gradient="from-indigo-500/[0.08]"
+                    className="left-[-10%] md:left-[-5%] top-[15%] md:top-[20%]"
+                />
+
+                <ElegantShape
+                    delay={0.5}
+                    width={500}
+                    height={120}
+                    rotate={-15}
+                    gradient="from-rose-500/[0.08]"
+                    className="right-[-5%] md:right-[0%] top-[70%] md:top-[75%]"
+                />
+
+                <ElegantShape
+                    delay={0.4}
+                    width={300}
+                    height={80}
+                    rotate={-8}
+                    gradient="from-violet-500/[0.08]"
+                    className="left-[5%] md:left-[10%] bottom-[5%] md:bottom-[10%]"
+                />
+
+                <ElegantShape
+                    delay={0.6}
+                    width={200}
+                    height={60}
+                    rotate={20}
+                    gradient="from-amber-500/[0.08]"
+                    className="right-[15%] md:right-[20%] top-[10%] md:top-[15%]"
+                />
+
+                <ElegantShape
+                    delay={0.7}
+                    width={150}
+                    height={40}
+                    rotate={-25}
+                    gradient="from-cyan-500/[0.08]"
+                    className="left-[20%] md:left-[25%] top-[5%] md:top-[10%]"
+                />
+            </div>
+
+            <div className="relative z-10 w-full max-w-7xl mx-auto px-4 md:px-6 pt-24 pb-8 flex flex-col items-center">
+                <div className="max-w-4xl w-full flex flex-col items-center text-center">
+                    <motion.div
+                        custom={0}
+                        variants={fadeUpVariants}
+                        initial="hidden"
+                        animate="visible"
+                        className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-slate-200 shadow-[0_2px_10px_rgba(0,0,0,0.03)] mb-8 md:mb-12"
+                    >
+                        <Circle className="h-2 w-2 fill-indigo-600/80 text-indigo-600" />
+                        <span className="text-[13px] font-medium text-slate-600 tracking-wide">
+                            {badge}
+                        </span>
+                    </motion.div>
+
+                    <motion.div
+                        custom={1}
+                        variants={fadeUpVariants}
+                        initial="hidden"
+                        animate="visible"
+                        className="w-full"
+                    >
+                        <h1 className="text-4xl sm:text-6xl md:text-[76px] font-bold mb-6 md:mb-8 tracking-tight leading-[1.05]">
+                            <span className="bg-clip-text text-transparent bg-gradient-to-b from-slate-900 to-slate-700">
+                                {title1}
+                            </span>
+                            <br />
+                            <span
+                                className={cn(
+                                    "bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 via-purple-500 to-rose-500 "
+                                )}
+                            >
+                                {title2}
+                            </span>
+                        </h1>
+                    </motion.div>
+
+                    <motion.div
+                        custom={2}
+                        variants={fadeUpVariants}
+                        initial="hidden"
+                        animate="visible"
+                        className="w-full"
+                    >
+                        <p className="text-base sm:text-lg md:text-[19px] text-slate-500 mb-10 leading-[1.6] font-normal max-w-xl mx-auto px-4">
+                            {description}
+                        </p>
+                    </motion.div>
+                    
+                    {/* The CTA / Children render here */}
+                    <motion.div
+                        custom={3}
+                        variants={fadeUpVariants}
+                        initial="hidden"
+                        animate="visible"
+                        className="w-full flex justify-center"
+                    >
+                        {children}
+                    </motion.div>
+                </div>
+            </div>
+
+            <div className="absolute inset-0 bg-gradient-to-t from-[#f8fafc] via-transparent to-transparent pointer-events-none" />
+        </div>
+    );
+}
+
+export { HeroGeometric };

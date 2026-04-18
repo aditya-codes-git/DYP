@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+/* ─── Design Tokens (LIGHT MODE) ─────────────────── */
+:root {
+  --forensiq-bg: #f8fafc;
+  --forensiq-surface: #ffffff;
+  --forensiq-surface-2: #f1f5f9;
+  --forensiq-border: #e2e8f0;
+  --forensiq-text: #0f172a;
+  --forensiq-text-muted: #64748b;
+  --forensiq-accent: #6366f1;
+  --forensiq-accent-glow: rgba(99, 102, 241, 0.15);
+  --forensiq-success: #10b981;
+  --forensiq-warning: #f59e0b;
+  --forensiq-danger: #ef4444;
+  --forensiq-cluster-0: #3b82f6;
+  --forensiq-cluster-2: #ef4444;
+  --forensiq-cluster-3: #a855f7;
+
+  /* Shadow variables for light mode */
+  --foreground: #0f172a;
+  --background: #ffffff;
+  --primary: #6366f1;
+  --secondary: #3b82f6;
+  --border: #e2e8f0;
+  --destructive: #ef4444;
+  --muted-foreground: #64748b;
+
+  /* Standard Spacing */
+  --section-py-desktop: 100px;
+  --section-py-mobile: 60px;
+  --container-px-desktop: 32px;
+  --container-px-mobile: 24px;
+  --content-max-width: 1200px;
+}
+
+/* ─── Base ───────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--forensiq-bg);
+  color: var(--forensiq-text);
+  min-height: 100vh;
+  width: 100%;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* CENTER EVERYTHING ON ROOT */
+}
+
+/* ─── Homepage centering overrides ───────────────── */
+section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding-top: var(--section-py-mobile);
+  padding-bottom: var(--section-py-mobile);
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  section {
+    padding-top: var(--section-py-desktop);
+    padding-bottom: var(--section-py-desktop);
+  }
+}
+
+.section-container {
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--container-px-mobile);
+  padding-right: var(--container-px-mobile);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+@media (min-width: 768px) {
+  .section-container {
+    padding-left: var(--container-px-desktop);
+    padding-right: var(--container-px-desktop);
+  }
+}
+
+
+/* ─── Scrollbar ──────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--forensiq-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--forensiq-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--forensiq-accent);
+}
+
+@plugin "tailwindcss-animate";
