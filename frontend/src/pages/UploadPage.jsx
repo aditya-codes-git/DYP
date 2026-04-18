@@ -8,45 +8,15 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabaseClient'
 import * as pdfjsLib from 'pdfjs-dist'
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
+import { runGeminiAnalysis } from '../lib/geminiClient'
+import { runGroqAnalysis } from '../lib/groqClient'
 
 // Configure pdf.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
 
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY
-
-const SYSTEM_PROMPT = `You are a forensic linguist and academic integrity expert. You will be given an array of paragraphs from a research paper. Your job is to analyze each paragraph's writing style and detect authorship inconsistency.
-
-For each paragraph analyze:
-- Sentence length variance
-- Vocabulary richness and complexity
-- Tone (formal/informal/technical/casual)
-- Linguistic fingerprint (passive voice usage, transition words, punctuation patterns)
-
-Group paragraphs into style clusters (label them A, B, C, D...). Paragraphs with similar writing style belong to the same cluster. Assign each paragraph a consistency_score from 0.0 to 1.0 where 1.0 = perfectly consistent with document style, 0.0 = completely inconsistent.
-
-Return ONLY a valid JSON object, no explanation, no markdown, no backticks:
-{
-  "paragraphs": [
-    {
-      "id": 1,
-      "cluster": "A",
-      "consistency_score": 0.91,
-      "tone": "formal",
-      "vocabulary_richness": "high",
-      "sentence_length": "long",
-      "reason": "one sentence explanation of why this paragraph fits or stands out",
-      "flagged": false
-    }
-  ],
-  "integrity_score": 0.0-100.0,
-  "author_count": number,
-  "verdict": "Likely Single Author" | "Possibly Multi-Author ⚠️" | "Highly Likely Stitched Content 🚨",
-  "summary": "3-4 sentence plain English forensic summary explaining what was found, which paragraph ranges shifted, what that implies, and why it matters for academic integrity"
-}
-
-A paragraph is flagged: true if its cluster differs from the majority cluster OR its consistency_score < 0.6.
-integrity_score = (number of non-flagged paragraphs / total paragraphs) * 100, rounded to 1 decimal.
-author_count = number of distinct clusters found.`
+// Calculate whether to send to fast Groq or deep Gemini
+const WORD_COUNT_THRESHOLD = 2500
 
 const STEPS = [
   { id: 'upload', label: 'Uploading to secure storage...', icon: CloudUpload },
@@ -77,6 +47,7 @@ export default function UploadPage() {
   const [completedSteps, setCompletedSteps] = useState([])
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  const [selectedModel, setSelectedModel] = useState(null)
 
   const handleDragOver = useCallback((e) => {
     e.preventDefault()
@@ -129,6 +100,7 @@ export default function UploadPage() {
     setCurrentStep(0)
     setCompletedSteps([])
     setError(null)
+    setSelectedModel(null)
 
     try {
       // ── Step 1: Upload PDF to Supabase Storage ──
@@ -159,7 +131,7 @@ export default function UploadPage() {
 
       markStepComplete(1)
 
-      // ── Step 3: Split into paragraphs & call Groq ──
+      // ── Step 3: Split into paragraphs & call AI ──
       let paragraphs = fullText
         .split(/\n\s*\n/)
         .map(p => p.trim())
@@ -170,40 +142,38 @@ export default function UploadPage() {
         throw new Error('Could not extract enough text from the PDF. Please ensure the file contains selectable text.')
       }
 
-      const userMessage = JSON.stringify(paragraphs.map((text, i) => ({ id: i + 1, text })))
+      // ── Step 3: 3-Tier AI Pipeline ──
+      const userMessage = JSON.stringify(paragraphs)
+      const charCount = userMessage.length
+      const groqApiKey = import.meta.env.VITE_GROQ_API_KEY
+      const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY
+      
+      let analysisResult;
 
-      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userMessage },
-          ],
-          max_tokens: 4000,
-          temperature: 0.1,
-        }),
-      })
-
-      if (!groqResponse.ok) {
-        const errBody = await groqResponse.text()
-        throw new Error(`Groq API error: ${groqResponse.status} - ${errBody}`)
+      if (charCount < 3000) {
+        console.log("[Pipeline] Small file — using Groq");
+        setSelectedModel('groq');
+        try {
+          analysisResult = await runGroqAnalysis(groqApiKey, userMessage);
+        } catch (groqError) {
+          console.warn("[Pipeline] Groq failed, falling back to Gemini:", groqError.message);
+          setSelectedModel('gemini');
+          analysisResult = await runGeminiAnalysis(geminiApiKey, userMessage);
+        }
+      } else {
+        console.log("[Pipeline] Large file — using Gemini");
+        setSelectedModel('gemini');
+        try {
+          analysisResult = await runGeminiAnalysis(geminiApiKey, userMessage);
+        } catch (geminiError) {
+          console.warn("[Pipeline] Gemini failed, falling back to Groq:", geminiError.message);
+          setSelectedModel('groq');
+          analysisResult = await runGroqAnalysis(groqApiKey, userMessage);
+        }
       }
 
-      const groqData = await groqResponse.json()
-      const rawContent = groqData.choices[0].message.content
-
-      // Parse JSON — handle potential markdown backticks
-      let analysisResult
-      try {
-        const cleaned = rawContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-        analysisResult = JSON.parse(cleaned)
-      } catch {
-        throw new Error('Failed to parse AI analysis response. The model returned invalid JSON.')
+      if (!analysisResult) {
+        throw new Error("All AI models failed");
       }
 
       markStepComplete(2)
@@ -233,13 +203,14 @@ export default function UploadPage() {
 
     } catch (err) {
       console.error('Pipeline error:', err)
-      setError(err.message)
+      setError("We’re having trouble analyzing your file. Please try again.")
       setPhase('error')
     }
   }
 
   const getVerdictColor = (verdict) => {
     if (!verdict) return 'bg-slate-100 text-slate-600'
+    if (verdict.includes('🤖')) return 'bg-purple-50 text-purple-700 border-purple-200'
     if (verdict.includes('🚨')) return 'bg-red-50 text-red-700 border-red-200'
     if (verdict.includes('⚠️')) return 'bg-amber-50 text-amber-700 border-amber-200'
     return 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -447,7 +418,11 @@ export default function UploadPage() {
                           isFailed ? 'text-red-600' :
                           'text-slate-400'
                         }`}>
-                          {step.label}
+                          {step.id === 'analyze' && selectedModel === 'groq'
+                            ? 'Running forensic analysis via Groq (fast mode)...'
+                            : step.id === 'analyze' && selectedModel === 'gemini'
+                            ? 'Running forensic analysis via Gemini (deep mode)...'
+                            : step.label}
                         </p>
                         {isComplete && (
                           <p className="text-xs text-emerald-500 mt-0.5">Completed</p>
@@ -473,7 +448,7 @@ export default function UploadPage() {
                     </div>
                   </div>
                   <button
-                    onClick={() => { setPhase('idle'); setError(null); setCompletedSteps([]) }}
+                    onClick={runPipeline}
                     className="mt-4 w-full py-3 rounded-xl bg-red-100 text-red-700 text-sm font-semibold hover:bg-red-200 transition-colors"
                   >
                     Try Again

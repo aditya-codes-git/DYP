@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowLeft, Download, Users, Shield, AlertTriangle,
   FileText, BookOpen, TrendingUp, Clock, ChevronRight,
-  BarChart3, Layers, Eye, Loader2
+  BarChart3, Layers, Eye, Loader2, Bot
 } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -39,6 +39,7 @@ function getIntegrityColor(score) {
 
 function getVerdictStyle(verdict) {
   if (!verdict) return 'bg-slate-100 text-slate-600 border-slate-200'
+  if (verdict.includes('🤖')) return 'bg-purple-50 text-purple-700 border-purple-200'
   if (verdict.includes('🚨')) return 'bg-red-50 text-red-700 border-red-200'
   if (verdict.includes('⚠️')) return 'bg-amber-50 text-amber-700 border-amber-200'
   return 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -295,11 +296,17 @@ export default function ReportPage() {
               {clusters.map(c => {
                 const cl = getCluster(c)
                 const count = paragraphs.filter(p => p.cluster === c).length
+                const profile = result.cluster_profiles?.[c]
                 return (
-                  <div key={c} className="flex items-center gap-3">
-                    <div className={`w-3 h-3 rounded-full ${cl.dot}`} />
-                    <span className="text-sm font-medium text-slate-700">Style {c}</span>
-                    <span className="text-xs text-slate-400 ml-auto">{count} ¶</span>
+                  <div key={c} className="flex items-start gap-3">
+                    <div className={`w-3 h-3 mt-1.5 rounded-full flex-shrink-0 ${cl.dot}`} />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-700">Style {c}</span>
+                        <span className="text-xs text-slate-400 ml-auto">{count} ¶</span>
+                      </div>
+                      {profile && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{profile}</p>}
+                    </div>
                   </div>
                 )
               })}
@@ -386,6 +393,15 @@ export default function ReportPage() {
                           <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${cl.bg} ${cl.text}`}>
                             Style {p.cluster}
                           </span>
+                          {p.ai_likelihood && (
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                              p.ai_likelihood === 'high' ? 'bg-rose-100 text-rose-700' :
+                              p.ai_likelihood === 'medium' ? 'bg-amber-100 text-amber-700' :
+                              'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              AI: {p.ai_likelihood.toUpperCase()}
+                            </span>
+                          )}
                           <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${getScoreColor(p.consistency_score)}`}>
                             {(p.consistency_score * 100).toFixed(0)}%
                           </span>
@@ -567,6 +583,12 @@ export default function ReportPage() {
                       color: 'indigo',
                     },
                     {
+                      label: 'AI Probability',
+                      value: `${result.ai_percentage !== undefined ? result.ai_percentage + '%' : 'N/A'}`,
+                      icon: Bot,
+                      color: 'rose',
+                    },
+                    {
                       label: 'Author Count',
                       value: analysis.author_count,
                       icon: Users,
@@ -577,12 +599,6 @@ export default function ReportPage() {
                       value: flaggedCount,
                       icon: AlertTriangle,
                       color: 'amber',
-                    },
-                    {
-                      label: 'Most Common Cluster',
-                      value: `Style ${majorityCluster}`,
-                      icon: Layers,
-                      color: 'emerald',
                     },
                   ].map((stat, i) => {
                     const Icon = stat.icon

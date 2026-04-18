@@ -3,18 +3,35 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { MenuToggleIcon } from '@/components/ui/menu-toggle-icon';
 import { useScroll } from '@/components/ui/use-scroll';
-import { Link } from 'react-router-dom';
-import { Shield } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
+import { Shield, Plus } from 'lucide-react';
 
 export function Header() {
 	const [open, setOpen] = React.useState(false);
 	const scrolled = useScroll(10);
+	const location = useLocation();
 
-	const links = [
+	const isDashboard = location.pathname === '/dashboard';
+	const isUpload = location.pathname === '/upload';
+	const isReport = location.pathname.startsWith('/report/');
+	const isHome = location.pathname === '/';
+
+	const links = isHome ? [
 		{ label: 'How It Works', href: '#how-it-works' },
 		{ label: 'Features', href: '#features' },
 		{ label: 'Contact', href: '#' },
+	] : [
+		{ label: 'Home', href: '/' },
+		...(isDashboard ? [] : [{ label: 'Dashboard', href: '/dashboard' }]),
 	];
+
+	// Determine the primary action button based on context
+	const primaryButton = (() => {
+		if (isDashboard || isReport) {
+			return { label: 'New Analysis', href: '/upload', icon: Plus };
+		}
+		return { label: 'Dashboard', href: '/dashboard' };
+	})();
 
 	React.useEffect(() => {
 		if (open) {
@@ -59,13 +76,20 @@ export function Header() {
 
 				<div className="hidden items-center gap-2 md:flex">
 					{links.map((link, i) => (
-						<a key={i} className={cn(buttonVariants({ variant: 'ghost' }), "text-slate-600 hover:text-slate-900")} href={link.href}>
-							{link.label}
-						</a>
+						link.href.startsWith('#') ? (
+							<a key={i} className={cn(buttonVariants({ variant: 'ghost' }), "text-slate-600 hover:text-slate-900")} href={link.href}>
+								{link.label}
+							</a>
+						) : (
+							<Link key={i} className={cn(buttonVariants({ variant: 'ghost' }), "text-slate-600 hover:text-slate-900")} to={link.href}>
+								{link.label}
+							</Link>
+						)
 					))}
 					<div className="w-[1px] h-4 bg-slate-200 mx-2" />
-					<Link to="/upload" className={buttonVariants({ variant: 'default', className: 'rounded-full px-6 shadow-sm' })}>
-						Dashboard
+					<Link to={primaryButton.href} className={buttonVariants({ variant: 'default', className: 'rounded-full px-6 shadow-sm flex items-center gap-2' })}>
+						{primaryButton.icon && <primaryButton.icon className="w-4 h-4" />}
+						{primaryButton.label}
 					</Link>
 				</div>
 				<Button size="icon" variant="ghost" onClick={() => setOpen(!open)} className="md:hidden hover:bg-slate-100">
@@ -88,24 +112,35 @@ export function Header() {
 					)}
 				>
 					<div className="grid gap-y-3">
-						{links.map((link) => (
-							<a
-								key={link.label}
-								className="text-lg font-medium text-slate-700 px-3 py-3 hover:bg-slate-50 rounded-lg transition-colors border-b border-slate-100"
-								href={link.href}
-								onClick={() => setOpen(false)}
-							>
-								{link.label}
-							</a>
+						{links.map((link, i) => (
+							link.href.startsWith('#') ? (
+								<a
+									key={i}
+									className="text-lg font-medium text-slate-700 px-3 py-3 hover:bg-slate-50 rounded-lg transition-colors border-b border-slate-100"
+									href={link.href}
+									onClick={() => setOpen(false)}
+								>
+									{link.label}
+								</a>
+							) : (
+								<Link
+									key={i}
+									className="text-lg font-medium text-slate-700 px-3 py-3 hover:bg-slate-50 rounded-lg transition-colors border-b border-slate-100"
+									to={link.href}
+									onClick={() => setOpen(false)}
+								>
+									{link.label}
+								</Link>
+							)
 						))}
 					</div>
 					<div className="flex flex-col gap-3 pt-6">
 						<Link 
-							to="/upload" 
+							to={primaryButton.href} 
 							className={buttonVariants({ variant: 'default', size: 'lg', className: 'w-full py-6 text-[16px] rounded-xl shadow-md bg-indigo-600 hover:bg-indigo-700' })}
 							onClick={() => setOpen(false)}
 						>
-							Go to Dashboard
+							{primaryButton.label}
 						</Link>
 					</div>
 				</div>

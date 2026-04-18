@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import {
   FileText, Users, AlertTriangle, ArrowRight, Upload,
-  BarChart3, Shield, Clock, TrendingUp, Loader2, Search
+  BarChart3, Shield, Clock, TrendingUp, Loader2, Search, Trash2, X
 } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Header } from '../components/ui/header-2'
 import { supabase } from '../lib/supabaseClient'
 
 function getVerdictStyle(verdict) {
   if (!verdict) return { bg: 'bg-slate-50', text: 'text-slate-500', border: 'border-slate-200' }
+  if (verdict.includes('🤖')) return { bg: 'bg-purple-50', text: 'text-purple-600', border: 'border-purple-200' }
   if (verdict.includes('🚨')) return { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-200' }
   if (verdict.includes('⚠️')) return { bg: 'bg-amber-50', text: 'text-amber-600', border: 'border-amber-200' }
   return { bg: 'bg-emerald-50', text: 'text-emerald-600', border: 'border-emerald-200' }
@@ -54,6 +55,8 @@ const fadeUp = {
 export default function DashboardPage() {
   const [analyses, setAnalyses] = useState([])
   const [loading, setLoading] = useState(true)
+  const [deletingId, setDeletingId] = useState(null)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useEffect(() => {
     async function fetchAnalyses() {
@@ -69,6 +72,25 @@ export default function DashboardPage() {
     }
     fetchAnalyses()
   }, [])
+
+  const deleteAnalysis = async (id) => {
+    setIsDeleting(true)
+    const previousAnalyses = [...analyses]
+    setAnalyses(analyses.filter(a => a.id !== id))
+
+    const { error } = await supabase
+      .from('analyses')
+      .delete()
+      .eq('id', id)
+
+    if (error) {
+      console.error('Error deleting analysis:', error)
+      alert('Failed to delete analysis.')
+      setAnalyses(previousAnalyses)
+    }
+    setDeletingId(null)
+    setIsDeleting(false)
+  }
 
   const totalDocuments = analyses.length
   const avgScore = totalDocuments > 0
@@ -204,17 +226,29 @@ export default function DashboardPage() {
                     className="bg-white rounded-2xl border border-slate-200 p-5 hover:shadow-lg hover:shadow-slate-200/50 hover:-translate-y-0.5 transition-all duration-300 flex flex-col"
                   >
                     {/* File info */}
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
-                        <FileText className="w-5 h-5 text-indigo-600" />
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                          <FileText className="w-5 h-5 text-indigo-600" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-slate-800 truncate" title={a.file_name}>{a.file_name}</p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(a.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </p>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-slate-800 truncate">{a.file_name}</p>
-                        <p className="text-xs text-slate-400 flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {new Date(a.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                        </p>
-                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault()
+                          setDeletingId(a.id)
+                        }}
+                        className="flex-shrink-0 p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-100"
+                        title="Delete Report"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
 
                     {/* Integrity Score Bar */}
@@ -267,6 +301,62 @@ export default function DashboardPage() {
           )}
         </div>
       </main>
+
+      {/* ════════════ DELETE CONFIRMATION MODAL ════════════ */}
+      <AnimatePresence>
+        {deletingId && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isDeleting && setDeletingId(null)}
+              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            >
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.95, opacity: 0, y: 20 }}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl border border-slate-200 text-center"
+              >
+                <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-6">
+                  <Trash2 className="w-8 h-8 text-red-500" />
+                </div>
+                
+                <h3 className="text-xl font-black text-slate-900 mb-2">Delete Report?</h3>
+                <p className="text-slate-500 text-sm mb-8 leading-relaxed">
+                  This action cannot be undone. All forensic analysis data for this document will be permanently removed.
+                </p>
+
+                <div className="flex flex-col gap-3">
+                  <button
+                    disabled={isDeleting}
+                    onClick={() => deleteAnalysis(deletingId)}
+                    className="w-full py-3.5 rounded-2xl bg-red-600 text-white font-bold text-sm shadow-lg shadow-red-500/25 hover:shadow-red-500/40 hover:bg-red-700 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      'Yes, Delete Report'
+                    )}
+                  </button>
+                  <button
+                    disabled={isDeleting}
+                    onClick={() => setDeletingId(null)}
+                    className="w-full py-3.5 rounded-2xl bg-slate-50 text-slate-600 font-bold text-sm hover:bg-slate-100 transition-all active:scale-[0.98] border border-slate-100 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
