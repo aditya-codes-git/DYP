@@ -4,31 +4,34 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   FileUp, Brain, CheckCircle2, Loader2, Upload,
   FileText, X, AlertCircle, ArrowRight, Sparkles,
-  Shield, CloudUpload, ScanSearch, Database
+  Shield, CloudUpload, ScanSearch, Database, Bot,
+  Globe, Scissors, SearchCheck
 } from 'lucide-react'
 import { supabase } from '../lib/supabaseClient'
-import * as pdfjsLib from 'pdfjs-dist'
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
-import { runGeminiAnalysis } from '../lib/geminiClient'
-import { runGroqAnalysis } from '../lib/groqClient'
+import * as pdfjsLib from 'pdfjs-dist';
+import PDFWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-// Configure pdf.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
-
-// Calculate whether to send to fast Groq or deep Gemini
-const WORD_COUNT_THRESHOLD = 2500
+pdfjsLib.GlobalWorkerOptions.workerSrc = PDFWorker;
+import { runStylometryAnalysis, runAIDetection, runSourceTracing } from '../lib/analysisClient'
 
 const STEPS = [
   { id: 'upload', label: 'Uploading to secure storage...', icon: CloudUpload },
   { id: 'extract', label: 'Extracting document text...', icon: ScanSearch },
-  { id: 'analyze', label: 'Running forensic analysis...', icon: Brain },
-  { id: 'save', label: 'Saving report...', icon: Database },
+  { id: 'preprocess', label: 'Preprocessing paragraphs...', icon: Scissors },
+  { id: 'stylometry', label: 'Running stylometric analysis...', icon: Brain },
+  { id: 'aidetect', label: 'Running AI content detection...', icon: Bot },
+  { id: 'sources', label: 'Tracing academic sources...', icon: Globe },
+  { id: 'save', label: 'Saving forensic report...', icon: Database },
 ]
 
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / 1048576).toFixed(1) + ' MB'
+}
+
+function countWords(text) {
+  return text.split(/\s+/).filter(w => w.length > 0).length
 }
 
 const fadeUp = {
@@ -45,9 +48,14 @@ export default function UploadPage() {
   const [phase, setPhase] = useState('idle') // idle | analyzing | done | error
   const [currentStep, setCurrentStep] = useState(0)
   const [completedSteps, setCompletedSteps] = useState([])
+  const [activeSteps, setActiveSteps] = useState([]) // Multiple steps can be active in parallel
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
-  const [selectedModel, setSelectedModel] = useState(null)
+  const [pipelineStatus, setPipelineStatus] = useState({
+    stylometry: 'pending',  // pending | running | done | failed
+    aiDetection: 'pending',
+    sourceTracing: 'pending',
+  })
 
   const handleDragOver = useCallback((e) => {
     e.preventDefault()
@@ -91,7 +99,12 @@ export default function UploadPage() {
 
   const markStepComplete = (stepIdx) => {
     setCompletedSteps(prev => [...prev, stepIdx])
-    setCurrentStep(stepIdx + 1)
+    setActiveSteps(prev => prev.filter(s => s !== stepIdx))
+  }
+
+  const markStepActive = (stepIdx) => {
+    setActiveSteps(prev => [...prev, stepIdx])
+    setCurrentStep(prev => Math.max(prev, stepIdx))
   }
 
   const runPipeline = async () => {
@@ -99,11 +112,13 @@ export default function UploadPage() {
     setPhase('analyzing')
     setCurrentStep(0)
     setCompletedSteps([])
+    setActiveSteps([])
     setError(null)
-    setSelectedModel(null)
+    setPipelineStatus({ stylometry: 'pending', aiDetection: 'pending', sourceTracing: 'pending' })
 
     try {
       // ── Step 1: Upload PDF to Supabase Storage ──
+      markStepActive(0)
       const fileName = `${Date.now()}-${file.name}`
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('documents')
@@ -118,6 +133,7 @@ export default function UploadPage() {
       markStepComplete(0)
 
       // ── Step 2: Extract text from PDF ──
+      markStepActive(1)
       const arrayBuffer = await file.arrayBuffer()
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
       let fullText = ''
@@ -131,88 +147,213 @@ export default function UploadPage() {
 
       markStepComplete(1)
 
-      // ── Step 3: Split into paragraphs & call AI ──
-      let paragraphs = fullText
+      // ── Step 3: Preprocess paragraphs ──
+      markStepActive(2)
+
+      // Split by double newline
+      const rawParagraphs = fullText
         .split(/\n\s*\n/)
         .map(p => p.trim())
-        .filter(p => p.length >= 100)
+        .filter(p => p.length > 0)
+
+      // Detect and strip references section
+      const referencesPatterns = [
+        /^references$/i,
+        /^bibliography$/i,
+        /^works cited$/i,
+        /^cited works$/i,
+        /^literature cited$/i,
+      ]
+
+      let referencesStartIdx = -1
+      for (let i = 0; i < rawParagraphs.length; i++) {
+        const firstLine = rawParagraphs[i].split('\n')[0].trim()
+        if (referencesPatterns.some(pat => pat.test(firstLine))) {
+          referencesStartIdx = i
+          break
+        }
+      }
+
+      const bodyParagraphs = referencesStartIdx >= 0
+        ? rawParagraphs.slice(0, referencesStartIdx)
+        : rawParagraphs
+
+      const referencesText = referencesStartIdx >= 0
+        ? rawParagraphs.slice(referencesStartIdx).join('\n\n')
+        : ''
+
+      // Filter out paragraphs under 50 words and limit to 40
+      const cleanParagraphs = bodyParagraphs
+        .filter(p => countWords(p) >= 50)
         .slice(0, 40)
 
-      if (paragraphs.length === 0) {
-        throw new Error('Could not extract enough text from the PDF. Please ensure the file contains selectable text.')
+      if (cleanParagraphs.length === 0) {
+        throw new Error('Could not extract enough text from the PDF. Please ensure the file contains selectable text with at least 50 words per paragraph.')
       }
 
-      // ── Step 3: 3-Tier AI Pipeline ──
-      const userMessage = JSON.stringify(paragraphs)
-      const charCount = userMessage.length
-      const groqApiKey = import.meta.env.VITE_GROQ_API_KEY
-      const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY
-      
-      let analysisResult;
+      // Number sequentially
+      const numberedParagraphs = cleanParagraphs.map((text, i) => ({
+        id: i + 1,
+        text,
+      }))
 
-      if (charCount < 3000) {
-        console.log("[Pipeline] Small file — using Groq");
-        setSelectedModel('groq');
-        try {
-          analysisResult = await runGroqAnalysis(groqApiKey, userMessage);
-        } catch (groqError) {
-          console.warn("[Pipeline] Groq failed, falling back to Gemini:", groqError.message);
-          setSelectedModel('gemini');
-          analysisResult = await runGeminiAnalysis(geminiApiKey, userMessage);
-        }
-      } else {
-        console.log("[Pipeline] Large file — using Gemini");
-        setSelectedModel('gemini');
-        try {
-          analysisResult = await runGeminiAnalysis(geminiApiKey, userMessage);
-        } catch (geminiError) {
-          console.warn("[Pipeline] Gemini failed, falling back to Groq:", geminiError.message);
-          setSelectedModel('groq');
-          analysisResult = await runGroqAnalysis(groqApiKey, userMessage);
-        }
-      }
+      const charCount = cleanParagraphs.join('').length
 
-      if (!analysisResult) {
-        throw new Error("All AI models failed");
-      }
+      console.log(`[Preprocessing] ${cleanParagraphs.length} paragraphs extracted, ${referencesStartIdx >= 0 ? 'references found' : 'no references section'}, ${charCount} total chars`)
 
       markStepComplete(2)
 
-      // ── Step 4: Save to Supabase ──
+      // ── Steps 3-5: Run all 3 pipelines in parallel ──
+      const userMessage = JSON.stringify(cleanParagraphs)
+
+      // Mark all pipeline steps as active
+      markStepActive(3)
+      markStepActive(4)
+      markStepActive(5)
+
+      // Pipeline 1: Stylometric Analysis (Edge Function handles model routing)
+      const runStylometryPipeline = async () => {
+        setPipelineStatus(prev => ({ ...prev, stylometry: 'running' }))
+        try {
+          const result = await runStylometryAnalysis(userMessage);
+          setPipelineStatus(prev => ({ ...prev, stylometry: 'done' }))
+          markStepComplete(3)
+          return result;
+        } catch (err) {
+          setPipelineStatus(prev => ({ ...prev, stylometry: 'failed' }))
+          throw err;
+        }
+      };
+
+      // Pipeline 2: AI Detection
+      const runAIDetectionPipeline = async () => {
+        setPipelineStatus(prev => ({ ...prev, aiDetection: 'running' }))
+        try {
+          const result = await runAIDetection(cleanParagraphs);
+          setPipelineStatus(prev => ({ ...prev, aiDetection: 'done' }))
+          markStepComplete(4)
+          return result;
+        } catch (err) {
+          setPipelineStatus(prev => ({ ...prev, aiDetection: 'failed' }))
+          throw err;
+        }
+      };
+
+      // Pipeline 3: Source Tracing
+      const runSourceTracingPipeline = async () => {
+        setPipelineStatus(prev => ({ ...prev, sourceTracing: 'running' }))
+        try {
+          const result = await runSourceTracing(numberedParagraphs.slice(0, 5));
+          setPipelineStatus(prev => ({ ...prev, sourceTracing: 'done' }))
+          markStepComplete(5)
+          return result;
+        } catch (err) {
+          setPipelineStatus(prev => ({ ...prev, sourceTracing: 'failed' }))
+          throw err;
+        }
+      };
+
+      // Run all 3 pipelines in parallel
+      const [stylometrySettled, aiDetectionSettled, sourceTracingSettled] = await Promise.allSettled([
+        runStylometryPipeline(),
+        runAIDetectionPipeline(),
+        runSourceTracingPipeline(),
+      ]);
+
+      const stylometryResult = stylometrySettled.status === 'fulfilled' ? stylometrySettled.value : null;
+      const aiDetectionResult = aiDetectionSettled.status === 'fulfilled' ? aiDetectionSettled.value : null;
+      const sourceTracingResult = sourceTracingSettled.status === 'fulfilled' ? sourceTracingSettled.value : null;
+
+      // Log pipeline results
+      console.log('[Pipeline Results]', {
+        stylometry: stylometrySettled.status,
+        aiDetection: aiDetectionSettled.status,
+        sourceTracing: sourceTracingSettled.status,
+      });
+
+      // At least stylometry must succeed
+      if (!stylometryResult) {
+        throw new Error('Stylometric analysis failed. Please try again.')
+      }
+
+      // ── Compute Combined Verdict ──
+      const stylometryScore = stylometryResult?.integrity_score ?? 100;
+      const aiScore = aiDetectionResult?.overall_ai_score ?? 0;
+      const stitchingDetected = sourceTracingResult?.stitching_analysis?.stitching_detected ?? false;
+      const stitchingConfidence = sourceTracingResult?.stitching_analysis?.confidence ?? 'low';
+      const sourceMatchCount = sourceTracingResult?.paragraph_traces?.length ?? 0;
+
+      let combinedVerdict, combinedRisk;
+      if (aiScore > 65 || stitchingDetected || stylometryScore < 50) {
+        combinedVerdict = '🚨 HIGH RISK — AI Generated Content + Stitched From Multiple Sources';
+        combinedRisk = 'high';
+      } else if (aiScore > 45 || stylometryScore < 75 || (sourceMatchCount > 0 && stitchingConfidence === 'low')) {
+        combinedVerdict = '⚠️ MODERATE RISK — Style Inconsistencies Detected';
+        combinedRisk = 'moderate';
+      } else {
+        combinedVerdict = '✅ LOW RISK — Document Appears Original and Consistent';
+        combinedRisk = 'low';
+      }
+
+      // ── Step 6: Save to Supabase ──
+      markStepActive(6)
+
+      const combinedResult = {
+        stylometry: stylometryResult,
+        aiDetection: aiDetectionResult,
+        sourceTracing: sourceTracingResult,
+        combinedVerdict,
+        combinedRisk,
+        // Legacy fields for backward compat
+        paragraphs: stylometryResult?.paragraphs,
+      };
+
       const { data: insertData, error: insertError } = await supabase
         .from('analyses')
         .insert({
           file_name: file.name,
           file_url: publicUrl,
           raw_text: fullText,
-          paragraphs: paragraphs.map((text, i) => ({ id: i + 1, text })),
-          result: analysisResult,
-          integrity_score: analysisResult.integrity_score,
-          author_count: analysisResult.author_count,
-          verdict: analysisResult.verdict,
-          summary: analysisResult.summary,
+          paragraphs: numberedParagraphs,
+          result: combinedResult,
+          integrity_score: stylometryScore,
+          author_count: stylometryResult?.cluster_count || 1,
+          verdict: combinedVerdict,
+          summary: stylometryResult?.summary || '',
         })
         .select()
         .single()
 
       if (insertError) throw new Error(`Database error: ${insertError.message}`)
 
-      markStepComplete(3)
-      setResult({ id: insertData.id, verdict: analysisResult.verdict, integrity_score: analysisResult.integrity_score })
+      markStepComplete(6)
+      setResult({
+        id: insertData.id,
+        verdict: combinedVerdict,
+        combinedRisk,
+        integrity_score: stylometryScore,
+        ai_score: aiScore,
+      })
       setPhase('done')
 
     } catch (err) {
       console.error('Pipeline error:', err)
-      setError("We’re having trouble analyzing your file. Please try again.")
+      setError(err.message || "We're having trouble analyzing your file. Please try again.")
       setPhase('error')
     }
   }
 
+  const getRiskColor = (risk) => {
+    if (!risk) return 'bg-slate-100 text-slate-600'
+    if (risk === 'high') return 'bg-red-50 text-red-700 border-red-200'
+    if (risk === 'moderate') return 'bg-amber-50 text-amber-700 border-amber-200'
+    return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+  }
+
   const getVerdictColor = (verdict) => {
     if (!verdict) return 'bg-slate-100 text-slate-600'
-    if (verdict.includes('🤖')) return 'bg-purple-50 text-purple-700 border-purple-200'
-    if (verdict.includes('🚨')) return 'bg-red-50 text-red-700 border-red-200'
-    if (verdict.includes('⚠️')) return 'bg-amber-50 text-amber-700 border-amber-200'
+    if (verdict.includes('🚨') || verdict.includes('HIGH RISK')) return 'bg-red-50 text-red-700 border-red-200'
+    if (verdict.includes('⚠️') || verdict.includes('MODERATE')) return 'bg-amber-50 text-amber-700 border-amber-200'
     return 'bg-emerald-50 text-emerald-700 border-emerald-200'
   }
 
@@ -236,7 +377,7 @@ export default function UploadPage() {
             Upload & Analyze
           </h1>
           <p className="text-slate-500 text-base sm:text-lg max-w-xl mx-auto">
-            Upload a research paper to detect authorship inconsistencies and style shifts.
+            Upload a research paper to detect authorship inconsistencies, AI-generated content, and sourcing patterns.
           </p>
         </motion.div>
 
@@ -331,6 +472,31 @@ export default function UploadPage() {
                 </div>
               )}
 
+              {/* Pipeline Info */}
+              <div className="mt-6 grid grid-cols-3 gap-3">
+                {[
+                  { icon: Brain, label: 'Stylometry', desc: 'Writing style analysis', color: 'indigo' },
+                  { icon: Bot, label: 'AI Detection', desc: 'AI content scanner', color: 'purple' },
+                  { icon: Globe, label: 'Source Tracing', desc: 'Academic sourcing', color: 'orange' },
+                ].map((p, i) => {
+                  const Icon = p.icon
+                  const colorMap = {
+                    indigo: 'bg-indigo-50 text-indigo-600',
+                    purple: 'bg-purple-50 text-purple-600',
+                    orange: 'bg-orange-50 text-orange-600',
+                  }
+                  return (
+                    <div key={i} className="bg-white rounded-2xl border border-slate-100 p-4 text-center">
+                      <div className={`w-10 h-10 rounded-xl ${colorMap[p.color]} flex items-center justify-center mx-auto mb-2`}>
+                        <Icon className="w-5 h-5" />
+                      </div>
+                      <p className="text-xs font-bold text-slate-700">{p.label}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{p.desc}</p>
+                    </div>
+                  )
+                })}
+              </div>
+
               {/* Analyze Button */}
               <motion.button
                 onClick={runPipeline}
@@ -346,8 +512,8 @@ export default function UploadPage() {
                 whileHover={file ? { scale: 1.01 } : undefined}
                 whileTap={file ? { scale: 0.99 } : undefined}
               >
-                <Brain className="w-5 h-5" />
-                Analyze Document
+                <SearchCheck className="w-5 h-5" />
+                Run Full Forensic Analysis
               </motion.button>
             </motion.div>
           )}
@@ -365,31 +531,40 @@ export default function UploadPage() {
               {/* Progress Bar */}
               <div className="h-1.5 rounded-full bg-slate-100 mb-10 overflow-hidden">
                 <motion.div
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500"
+                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-orange-500"
                   initial={{ width: '0%' }}
                   animate={{
-                    width: phase === 'error' ? `${(completedSteps.length / 4) * 100}%` : `${((completedSteps.length + 0.5) / 4) * 100}%`
+                    width: phase === 'error' ? `${(completedSteps.length / STEPS.length) * 100}%` : `${((completedSteps.length + 0.3) / STEPS.length) * 100}%`
                   }}
                   transition={{ duration: 0.8, ease: 'easeInOut' }}
                 />
               </div>
 
-              <div className="space-y-6">
+              <div className="space-y-4">
                 {STEPS.map((step, idx) => {
                   const isComplete = completedSteps.includes(idx)
-                  const isActive = currentStep === idx && phase !== 'error'
-                  const isPending = idx > currentStep
-                  const isFailed = phase === 'error' && currentStep === idx
+                  const isActive = activeSteps.includes(idx) && !isComplete
+                  const isPending = !isComplete && !isActive
+                  const isFailed = phase === 'error' && isActive
                   const StepIcon = step.icon
+
+                  // Color coding for pipeline steps
+                  const pipelineColors = {
+                    stylometry: { active: 'bg-indigo-50', icon: 'bg-indigo-100', text: 'text-indigo-700', spin: 'text-indigo-600' },
+                    aidetect: { active: 'bg-purple-50', icon: 'bg-purple-100', text: 'text-purple-700', spin: 'text-purple-600' },
+                    sources: { active: 'bg-orange-50', icon: 'bg-orange-100', text: 'text-orange-700', spin: 'text-orange-600' },
+                  }
+                  const pColor = pipelineColors[step.id]
 
                   return (
                     <motion.div
                       key={step.id}
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: idx * 0.1 }}
+                      transition={{ delay: idx * 0.08 }}
                       className={`flex items-center gap-4 p-4 rounded-2xl transition-all duration-300 ${
                         isComplete ? 'bg-emerald-50/50' :
+                        isActive && pColor ? pColor.active :
                         isActive ? 'bg-indigo-50/50' :
                         isFailed ? 'bg-red-50/50' :
                         'bg-transparent'
@@ -397,6 +572,7 @@ export default function UploadPage() {
                     >
                       <div className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300 ${
                         isComplete ? 'bg-emerald-100' :
+                        isActive && pColor ? pColor.icon :
                         isActive ? 'bg-indigo-100' :
                         isFailed ? 'bg-red-100' :
                         'bg-slate-100'
@@ -404,7 +580,7 @@ export default function UploadPage() {
                         {isComplete ? (
                           <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                         ) : isActive ? (
-                          <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
+                          <Loader2 className={`w-5 h-5 animate-spin ${pColor ? pColor.spin : 'text-indigo-600'}`} />
                         ) : isFailed ? (
                           <AlertCircle className="w-5 h-5 text-red-500" />
                         ) : (
@@ -414,21 +590,49 @@ export default function UploadPage() {
                       <div className="flex-1">
                         <p className={`text-sm font-semibold transition-colors ${
                           isComplete ? 'text-emerald-700' :
+                          isActive && pColor ? pColor.text :
                           isActive ? 'text-indigo-700' :
                           isFailed ? 'text-red-600' :
                           'text-slate-400'
                         }`}>
-                          {step.id === 'analyze' && selectedModel === 'groq'
-                            ? 'Running forensic analysis via Groq (fast mode)...'
-                            : step.id === 'analyze' && selectedModel === 'gemini'
-                            ? 'Running forensic analysis via Gemini (deep mode)...'
-                            : step.label}
+                          {step.label}
                         </p>
                         {isComplete && (
                           <p className="text-xs text-emerald-500 mt-0.5">Completed</p>
                         )}
+                        {isActive && ['stylometry', 'aidetect', 'sources'].includes(step.id) && (
+                          <p className="text-xs text-slate-400 mt-0.5">Running in parallel...</p>
+                        )}
                       </div>
                     </motion.div>
+                  )
+                })}
+              </div>
+
+              {/* Pipeline Status Badges */}
+              <div className="mt-8 flex items-center gap-3 flex-wrap">
+                {[
+                  { key: 'stylometry', label: 'Stylometry', color: 'indigo' },
+                  { key: 'aiDetection', label: 'AI Detection', color: 'purple' },
+                  { key: 'sourceTracing', label: 'Source Tracing', color: 'orange' },
+                ].map(p => {
+                  const status = pipelineStatus[p.key]
+                  const statusColors = {
+                    pending: 'bg-slate-100 text-slate-400',
+                    running: `bg-${p.color}-50 text-${p.color}-600 border-${p.color}-200`,
+                    done: 'bg-emerald-50 text-emerald-600 border-emerald-200',
+                    failed: 'bg-red-50 text-red-600 border-red-200',
+                  }
+                  return (
+                    <span
+                      key={p.key}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border ${statusColors[status] || statusColors.pending}`}
+                    >
+                      {status === 'running' && <Loader2 className="w-3 h-3 animate-spin" />}
+                      {status === 'done' && <CheckCircle2 className="w-3 h-3" />}
+                      {status === 'failed' && <AlertCircle className="w-3 h-3" />}
+                      {p.label}: {status}
+                    </span>
                   )
                 })}
               </div>
@@ -472,21 +676,40 @@ export default function UploadPage() {
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 200, damping: 15 }}
-                className="w-20 h-20 rounded-full bg-emerald-50 flex items-center justify-center mx-auto mb-6"
+                className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
+                  result.combinedRisk === 'high' ? 'bg-red-50' :
+                  result.combinedRisk === 'moderate' ? 'bg-amber-50' :
+                  'bg-emerald-50'
+                }`}
               >
-                <CheckCircle2 className="w-10 h-10 text-emerald-500" />
+                {result.combinedRisk === 'high' ? (
+                  <AlertCircle className="w-10 h-10 text-red-500" />
+                ) : result.combinedRisk === 'moderate' ? (
+                  <AlertCircle className="w-10 h-10 text-amber-500" />
+                ) : (
+                  <CheckCircle2 className="w-10 h-10 text-emerald-500" />
+                )}
               </motion.div>
 
               <h2 className="text-2xl font-black text-slate-900 mb-2">Analysis Complete</h2>
-              <p className="text-slate-500 mb-6">Your forensic report is ready.</p>
+              <p className="text-slate-500 mb-6">Your 3-pipeline forensic report is ready.</p>
 
               <div className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full border text-sm font-bold mb-8 ${getVerdictColor(result.verdict)}`}>
                 <Sparkles className="w-4 h-4" />
                 {result.verdict}
               </div>
 
-              <div className="text-5xl font-black text-slate-900 mb-2">{result.integrity_score?.toFixed(1)}%</div>
-              <p className="text-sm text-slate-400 mb-10">Integrity Score</p>
+              {/* Quick Stats */}
+              <div className="grid grid-cols-2 gap-4 mb-8">
+                <div className="bg-indigo-50/50 rounded-2xl p-4">
+                  <p className="text-3xl font-black text-slate-900">{result.integrity_score?.toFixed(1)}%</p>
+                  <p className="text-xs text-slate-400 mt-1">Style Integrity</p>
+                </div>
+                <div className="bg-purple-50/50 rounded-2xl p-4">
+                  <p className="text-3xl font-black text-slate-900">{result.ai_score ?? 'N/A'}{result.ai_score !== undefined ? '%' : ''}</p>
+                  <p className="text-xs text-slate-400 mt-1">AI Probability</p>
+                </div>
+              </div>
 
               <button
                 onClick={() => navigate(`/report/${result.id}`)}

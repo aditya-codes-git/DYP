@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowLeft, Download, Users, Shield, AlertTriangle,
   FileText, BookOpen, TrendingUp, Clock, ChevronRight,
-  BarChart3, Layers, Eye, Loader2, Bot
+  BarChart3, Layers, Eye, Loader2, Bot, Globe,
+  Brain, ExternalLink, Search, CheckCircle2, AlertCircle, ChevronDown
 } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -12,6 +13,7 @@ import {
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient'
 
+// ═══ CONSTANTS ═══
 const CLUSTER_COLORS = {
   A: { bg: 'bg-indigo-50', border: 'border-indigo-400', text: 'text-indigo-700', hex: '#6366f1', dot: 'bg-indigo-500' },
   B: { bg: 'bg-rose-50', border: 'border-rose-400', text: 'text-rose-700', hex: '#f43f5e', dot: 'bg-rose-500' },
@@ -26,9 +28,17 @@ function getCluster(letter) {
 }
 
 function getScoreColor(score) {
-  if (score >= 0.8) return 'text-emerald-600 bg-emerald-50'
+  if (score >= 0.75) return 'text-emerald-600 bg-emerald-50'
   if (score >= 0.6) return 'text-amber-600 bg-amber-50'
   return 'text-red-600 bg-red-50'
+}
+
+function getAiScoreColor(score) {
+  if (score <= 25) return { text: 'text-emerald-600', bg: 'bg-emerald-500', label: 'Human' }
+  if (score <= 45) return { text: 'text-emerald-600', bg: 'bg-emerald-400', label: 'Likely Human' }
+  if (score <= 65) return { text: 'text-amber-600', bg: 'bg-amber-500', label: 'Ambiguous' }
+  if (score <= 85) return { text: 'text-orange-600', bg: 'bg-orange-500', label: 'Likely AI' }
+  return { text: 'text-red-600', bg: 'bg-red-500', label: 'AI Generated' }
 }
 
 function getIntegrityColor(score) {
@@ -37,12 +47,10 @@ function getIntegrityColor(score) {
   return { ring: '#ef4444', bg: 'bg-red-50', text: 'text-red-600' }
 }
 
-function getVerdictStyle(verdict) {
-  if (!verdict) return 'bg-slate-100 text-slate-600 border-slate-200'
-  if (verdict.includes('🤖')) return 'bg-purple-50 text-purple-700 border-purple-200'
-  if (verdict.includes('🚨')) return 'bg-red-50 text-red-700 border-red-200'
-  if (verdict.includes('⚠️')) return 'bg-amber-50 text-amber-700 border-amber-200'
-  return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+function getRiskBannerStyle(risk) {
+  if (risk === 'high') return 'bg-gradient-to-r from-red-600 to-rose-600 text-white'
+  if (risk === 'moderate') return 'bg-gradient-to-r from-amber-500 to-orange-500 text-white'
+  return 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white'
 }
 
 function CircularProgress({ score, size = 140, strokeWidth = 10 }) {
@@ -61,22 +69,22 @@ function CircularProgress({ score, size = 140, strokeWidth = 10 }) {
         <motion.circle
           cx={size / 2} cy={size / 2} r={radius}
           fill="none" stroke={color.ring} strokeWidth={strokeWidth}
-          strokeLinecap="round"
           strokeDasharray={circumference}
-          initial={{ strokeDashoffset: circumference }}
+          strokeDashoffset={circumference}
           animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 1.5, ease: [0.25, 0.46, 0.45, 0.94], delay: 0.3 }}
+          transition={{ duration: 1.2, ease: 'easeOut' }}
+          strokeLinecap="round"
         />
       </svg>
-      <div className="absolute flex flex-col items-center">
-        <span className={`text-3xl font-black ${color.text}`}>{score?.toFixed(1)}</span>
-        <span className="text-xs text-slate-400 font-medium">/ 100</span>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-3xl font-black text-slate-900">{score?.toFixed(1)}</span>
+        <span className="text-xs text-slate-400 font-bold">/ 100</span>
       </div>
     </div>
   )
 }
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null
   const data = payload[0].payload
   return (
@@ -88,12 +96,14 @@ function CustomTooltip({ active, payload, label }) {
   )
 }
 
+// ═══ MAIN COMPONENT ═══
 export default function ReportPage() {
   const { id } = useParams()
   const [analysis, setAnalysis] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState('document')
+  const [activeTab, setActiveTab] = useState('stylometry')
   const [error, setError] = useState(null)
+  const [expandedParagraphs, setExpandedParagraphs] = useState(new Set())
 
   useEffect(() => {
     async function fetchAnalysis() {
@@ -112,6 +122,14 @@ export default function ReportPage() {
     }
     if (id) fetchAnalysis()
   }, [id])
+
+  const toggleExpanded = (pid) => {
+    setExpandedParagraphs(prev => {
+      const next = new Set(prev)
+      next.has(pid) ? next.delete(pid) : next.add(pid)
+      return next
+    })
+  }
 
   if (loading) {
     return (
@@ -139,16 +157,26 @@ export default function ReportPage() {
     )
   }
 
-  const result = analysis.result || {}
-  const paragraphs = result.paragraphs || []
+  // ═══ DATA EXTRACTION (backward compatible) ═══
+  const rawResult = analysis.result || {}
+  const isNewFormat = !!rawResult.stylometry
+  
+  // Stylometry data
+  const stylometry = isNewFormat ? rawResult.stylometry : rawResult
+  const paragraphs = stylometry?.paragraphs || []
   const rawParagraphs = analysis.paragraphs || []
   const clusters = [...new Set(paragraphs.map(p => p.cluster))].sort()
   const flaggedCount = paragraphs.filter(p => p.flagged).length
-  const majorityCluster = (() => {
-    const counts = {}
-    paragraphs.forEach(p => { counts[p.cluster] = (counts[p.cluster] || 0) + 1 })
-    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'A'
-  })()
+
+  // AI Detection data
+  const aiDetection = isNewFormat ? rawResult.aiDetection : null
+
+  // Source Tracing data
+  const sourceTracing = isNewFormat ? rawResult.sourceTracing : null
+
+  // Combined verdict
+  const combinedVerdict = rawResult.combinedVerdict || analysis.verdict
+  const combinedRisk = rawResult.combinedRisk || (analysis.integrity_score >= 80 ? 'low' : analysis.integrity_score >= 50 ? 'moderate' : 'high')
 
   // Chart data
   const chartData = paragraphs.map(p => ({
@@ -157,7 +185,7 @@ export default function ReportPage() {
     cluster: p.cluster,
   }))
 
-  // Shift points
+  // Style shift points
   const shiftPoints = []
   for (let i = 1; i < paragraphs.length; i++) {
     if (paragraphs[i].cluster !== paragraphs[i - 1].cluster) {
@@ -165,224 +193,185 @@ export default function ReportPage() {
         id: paragraphs[i].id,
         from: paragraphs[i - 1].cluster,
         to: paragraphs[i].cluster,
-        reason: paragraphs[i].reason,
+        reason: paragraphs[i].flag_reason || paragraphs[i].reason,
       })
     }
   }
 
-  // Generate "What This Means" bullets from real data
-  const generateInsights = () => {
-    const insights = []
-    if (analysis.author_count === 1) {
-      insights.push('The document shows a consistent writing style throughout, suggesting it was written by a single author.')
-    } else {
-      insights.push(`The analysis detected ${analysis.author_count} distinct writing styles, which may indicate sections were written by different individuals or sourced from different materials.`)
-    }
-    if (flaggedCount > 0) {
-      insights.push(`${flaggedCount} out of ${paragraphs.length} paragraphs were flagged for inconsistency — these sections showed notable deviations in tone, vocabulary, or sentence structure.`)
-    } else {
-      insights.push('No paragraphs were flagged for inconsistency. The writing style remains uniform across all sections.')
-    }
-    if (analysis.integrity_score >= 80) {
-      insights.push('The high integrity score indicates strong stylistic consistency. This document is unlikely to contain stitched or externally sourced content.')
-    } else if (analysis.integrity_score >= 50) {
-      insights.push('The moderate integrity score suggests some variation in writing style. This could indicate collaborative writing, heavy editing, or partially borrowed content.')
-    } else {
-      insights.push('The low integrity score raises significant concerns about content authenticity. Multiple writing styles suggest externally sourced or stitched content.')
-    }
-    return insights
-  }
-
   const tabs = [
-    { id: 'document', label: 'Document View', icon: Eye },
-    { id: 'timeline', label: 'Style Shift Timeline', icon: TrendingUp },
-    { id: 'summary', label: 'Summary & Verdict', icon: BookOpen },
+    { id: 'stylometry', label: 'Stylometry', icon: Brain, color: 'indigo' },
+    { id: 'aidetection', label: 'AI Detection', icon: Bot, color: 'purple' },
+    { id: 'sources', label: 'Source Tracing', icon: Globe, color: 'orange' },
+    { id: 'summary', label: 'Summary', icon: BookOpen, color: 'slate' },
   ]
 
   return (
     <div className="min-h-screen bg-slate-50/50" style={{ textAlign: 'left' }}>
-      {/* Mobile Header */}
-      <div className="lg:hidden bg-white border-b border-slate-200 sticky top-0 z-40 px-4 py-3">
-        <div className="flex items-center justify-between mb-3">
-          <Link to="/dashboard" className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 no-underline font-medium">
+      {/* ═══ COMBINED VERDICT BANNER ═══ */}
+      <div className={`${getRiskBannerStyle(combinedRisk)} px-4 py-4 sm:py-5`}>
+        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            {combinedRisk === 'high' ? <AlertCircle className="w-6 h-6" /> :
+             combinedRisk === 'moderate' ? <AlertTriangle className="w-6 h-6" /> :
+             <CheckCircle2 className="w-6 h-6" />}
+            <div>
+              <p className="text-sm font-bold opacity-80">Combined Forensic Verdict</p>
+              <p className="text-base sm:text-lg font-black">{combinedVerdict}</p>
+            </div>
+          </div>
+          <Link
+            to="/dashboard"
+            className="flex items-center gap-1.5 text-sm font-semibold opacity-80 hover:opacity-100 no-underline text-white/90 hover:text-white transition-opacity"
+          >
             <ArrowLeft className="w-4 h-4" /> Dashboard
           </Link>
-          <div className={`px-3 py-1 rounded-full text-xs font-bold border ${getVerdictStyle(analysis.verdict)}`}>
-            {analysis.verdict}
+        </div>
+      </div>
+
+      {/* ═══ FILE INFO BAR ═══ */}
+      <div className="bg-white border-b border-slate-200 px-4 py-3">
+        <div className="max-w-5xl mx-auto flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+              <FileText className="w-5 h-5 text-indigo-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-800 truncate max-w-[200px] sm:max-w-none">{analysis.file_name}</p>
+              <p className="text-xs text-slate-400 flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {new Date(analysis.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                <span className="mx-1">•</span>
+                {paragraphs.length} paragraphs
+              </p>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-3 overflow-x-auto pb-1 -mx-1 px-1">
+      </div>
+
+      {/* ═══ TAB NAVIGATION ═══ */}
+      <div className="bg-white border-b border-slate-200 px-4 sticky top-0 z-40">
+        <div className="max-w-5xl mx-auto flex items-center gap-1 overflow-x-auto py-2">
           {tabs.map(tab => {
             const Icon = tab.icon
+            const isActive = activeTab === tab.id
+            const colorMap = {
+              indigo: isActive ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : '',
+              purple: isActive ? 'bg-purple-50 text-purple-600 border-purple-200' : '',
+              orange: isActive ? 'bg-orange-50 text-orange-600 border-orange-200' : '',
+              slate: isActive ? 'bg-slate-100 text-slate-700 border-slate-200' : '',
+            }
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                    : 'text-slate-500 hover:text-slate-700'
+                className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all border ${
+                  isActive ? colorMap[tab.color] : 'text-slate-400 hover:text-slate-600 border-transparent hover:bg-slate-50'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className="w-4 h-4" />
                 {tab.label}
+                {tab.id === 'aidetection' && aiDetection && (
+                  <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    aiDetection.overall_ai_score > 65 ? 'bg-red-100 text-red-600' :
+                    aiDetection.overall_ai_score > 45 ? 'bg-amber-100 text-amber-600' :
+                    'bg-emerald-100 text-emerald-600'
+                  }`}>
+                    {aiDetection.overall_ai_score}%
+                  </span>
+                )}
               </button>
             )
           })}
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row min-h-screen">
-        {/* ═══════ SIDEBAR ═══════ */}
-        <aside className="hidden lg:flex flex-col w-[280px] bg-white border-r border-slate-200 p-6 gap-6 fixed top-0 left-0 h-screen overflow-y-auto z-30">
-          {/* Logo */}
-          <Link to="/" className="flex items-center gap-2.5 no-underline mb-2">
-            <div
-              className="w-8 h-8 flex items-center justify-center rounded-lg shadow-sm"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+      {/* ═══ TAB CONTENT ═══ */}
+      <div className="max-w-5xl mx-auto px-4 py-8">
+        <AnimatePresence mode="wait">
+          {/* ═══════ TAB 1: STYLOMETRY (Blue) ═══════ */}
+          {activeTab === 'stylometry' && (
+            <motion.div
+              key="stylometry"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
             >
-              <Shield className="w-4 h-4 text-white" />
-            </div>
-            <span className="text-[17px] font-bold text-slate-800 tracking-tight">
-              Forens<span className="text-indigo-600">IQ</span>
-            </span>
-          </Link>
-
-          <div className="text-xs font-bold text-slate-400 tracking-widest uppercase">Forensic Report</div>
-
-          {/* Back link */}
-          <Link to="/dashboard" className="flex items-center gap-2 text-sm text-slate-500 hover:text-indigo-600 no-underline font-medium transition-colors">
-            <ArrowLeft className="w-4 h-4" /> Back to Dashboard
-          </Link>
-
-          {/* File info */}
-          <div className="bg-slate-50 rounded-2xl p-4">
-            <div className="flex items-center gap-3 mb-2">
-              <FileText className="w-5 h-5 text-indigo-500" />
-              <p className="text-sm font-semibold text-slate-800 truncate flex-1">{analysis.file_name}</p>
-            </div>
-            <p className="text-xs text-slate-400 flex items-center gap-1.5">
-              <Clock className="w-3 h-3" />
-              {new Date(analysis.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-            </p>
-          </div>
-
-          {/* Integrity Score */}
-          <div className="flex flex-col items-center py-4">
-            <CircularProgress score={analysis.integrity_score} />
-            <p className="text-xs text-slate-400 font-medium mt-3">Integrity Score</p>
-          </div>
-
-          {/* Verdict */}
-          <div className={`px-4 py-2.5 rounded-full text-center text-xs font-bold border ${getVerdictStyle(analysis.verdict)}`}>
-            {analysis.verdict}
-          </div>
-
-          {/* Author count */}
-          <div className="flex items-center gap-3 bg-slate-50 rounded-2xl p-4">
-            <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center">
-              <Users className="w-4 h-4 text-indigo-600" />
-            </div>
-            <div>
-              <p className="text-lg font-black text-slate-900">{analysis.author_count}</p>
-              <p className="text-xs text-slate-400">Estimated Authors</p>
-            </div>
-          </div>
-
-          {/* Cluster Legend */}
-          <div>
-            <p className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-3">Cluster Legend</p>
-            <div className="space-y-2.5">
-              {clusters.map(c => {
-                const cl = getCluster(c)
-                const count = paragraphs.filter(p => p.cluster === c).length
-                const profile = result.cluster_profiles?.[c]
-                return (
-                  <div key={c} className="flex items-start gap-3">
-                    <div className={`w-3 h-3 mt-1.5 rounded-full flex-shrink-0 ${cl.dot}`} />
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-slate-700">Style {c}</span>
-                        <span className="text-xs text-slate-400 ml-auto">{count} ¶</span>
-                      </div>
-                      {profile && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{profile}</p>}
-                    </div>
+              {/* Header Stats */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col items-center">
+                  <CircularProgress score={stylometry?.integrity_score || 0} size={120} />
+                  <p className="text-xs text-slate-400 font-bold mt-3">Style Integrity Score</p>
+                </div>
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col items-center justify-center">
+                  <p className="text-4xl font-black text-slate-900">{stylometry?.cluster_count || clusters.length}</p>
+                  <p className="text-xs text-slate-400 font-bold mt-1">Style Clusters</p>
+                  <div className={`mt-3 px-3 py-1.5 rounded-full text-xs font-bold border ${
+                    stylometry?.verdict?.includes('🚨') ? 'bg-red-50 text-red-600 border-red-200' :
+                    stylometry?.verdict?.includes('⚠️') ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                    'bg-emerald-50 text-emerald-600 border-emerald-200'
+                  }`}>{stylometry?.verdict || 'N/A'}</div>
+                </div>
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <p className="text-xs text-slate-400 font-bold mb-3">Cluster Legend</p>
+                  <div className="space-y-3">
+                    {clusters.map(c => {
+                      const cl = getCluster(c)
+                      const count = paragraphs.filter(p => p.cluster === c).length
+                      const profile = stylometry?.cluster_profiles?.[c]
+                      return (
+                        <div key={c} className="flex items-start gap-2">
+                          <div className={`w-3 h-3 mt-1 rounded-full flex-shrink-0 ${cl.dot}`} />
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-700">Style {c}</span>
+                              <span className="text-[10px] text-slate-400">{count} ¶</span>
+                            </div>
+                            {profile && <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{profile}</p>}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
-                )
-              })}
-            </div>
-          </div>
+                </div>
+              </div>
 
-          {/* Download button */}
-          <button
-            onClick={() => {
-              const reportData = JSON.stringify(analysis, null, 2)
-              const blob = new Blob([reportData], { type: 'application/json' })
-              const url = URL.createObjectURL(blob)
-              const a = document.createElement('a')
-              a.href = url
-              a.download = `forensiq-report-${analysis.file_name}.json`
-              a.click()
-              URL.revokeObjectURL(url)
-            }}
-            className="mt-auto flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            Download Report
-          </button>
-        </aside>
+              {/* Style Timeline Chart */}
+              {chartData.length > 0 && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <h3 className="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-indigo-500" />
+                    Style Consistency Timeline
+                  </h3>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <XAxis dataKey="id" tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                      <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                      <Tooltip content={<CustomTooltip />} />
+                      <ReferenceLine y={0.75} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Threshold', fill: '#ef4444', fontSize: 10 }} />
+                      <Line type="monotone" dataKey="consistency_score" stroke="#6366f1" strokeWidth={2} dot={{ r: 4, fill: '#6366f1' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
 
-        {/* ═══════ MAIN CONTENT ═══════ */}
-        <main className="flex-1 lg:ml-[280px] p-4 sm:p-6 lg:p-8 pt-4 lg:pt-8">
-          {/* Desktop Tabs */}
-          <div className="hidden lg:flex items-center gap-2 mb-8 bg-white rounded-2xl p-1.5 border border-slate-200 w-fit">
-            {tabs.map(tab => {
-              const Icon = tab.icon
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === tab.id
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  {tab.label}
-                </button>
-              )
-            })}
-          </div>
-
-          <AnimatePresence mode="wait">
-            {/* ═══ TAB 1: DOCUMENT VIEW ═══ */}
-            {activeTab === 'document' && (
-              <motion.div
-                key="document"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="space-y-4"
-              >
-                {paragraphs.map((p, idx) => {
+              {/* Paragraph Cards */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-indigo-500" />
+                  Paragraph Analysis ({paragraphs.length})
+                </h3>
+                {paragraphs.map(p => {
                   const cl = getCluster(p.cluster)
-                  const rawText = rawParagraphs[idx]?.text || rawParagraphs[idx] || ''
-
+                  const rawText = rawParagraphs.find(rp => rp.id === p.id)?.text || `Paragraph ${p.id}`
+                  const scoreColorClass = p.consistency_score >= 0.75 ? 'border-l-emerald-400' :
+                                          p.consistency_score >= 0.6 ? 'border-l-amber-400' :
+                                          'border-l-red-400'
                   return (
-                    <motion.div
+                    <div
                       key={p.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.03 }}
-                      className={`
-                        rounded-2xl border-l-4 ${cl.border} p-5 sm:p-6 transition-all
-                        ${p.flagged
-                          ? 'bg-red-50/40 border border-red-200/60'
-                          : 'bg-white border border-slate-100'
-                        }
-                      `}
+                      className={`bg-white rounded-2xl border border-slate-200 border-l-4 ${scoreColorClass} p-5`}
                     >
                       <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
                         <div className="flex items-center gap-2">
@@ -393,255 +382,424 @@ export default function ReportPage() {
                           <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${cl.bg} ${cl.text}`}>
                             Style {p.cluster}
                           </span>
-                          {p.ai_likelihood && (
-                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                              p.ai_likelihood === 'high' ? 'bg-rose-100 text-rose-700' :
-                              p.ai_likelihood === 'medium' ? 'bg-amber-100 text-amber-700' :
-                              'bg-emerald-100 text-emerald-700'
-                            }`}>
-                              AI: {p.ai_likelihood.toUpperCase()}
-                            </span>
-                          )}
                           <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${getScoreColor(p.consistency_score)}`}>
                             {(p.consistency_score * 100).toFixed(0)}%
                           </span>
                         </div>
                       </div>
 
-                      <p className="text-sm text-slate-700 leading-relaxed mb-3 whitespace-pre-wrap">
+                      <p className="text-sm text-slate-700 leading-relaxed mb-3 whitespace-pre-wrap line-clamp-3">
                         {rawText}
                       </p>
 
-                      {p.flagged && p.reason && (
+                      {p.flagged && (p.flag_reason || p.reason) && (
                         <div className="flex items-start gap-2 mt-3 p-3 rounded-xl bg-amber-50/80 border border-amber-100">
                           <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
-                          <p className="text-xs text-amber-700 leading-relaxed">{p.reason}</p>
+                          <p className="text-xs text-amber-700 leading-relaxed">{p.flag_reason || p.reason}</p>
                         </div>
                       )}
 
-                      <div className="flex items-center gap-4 mt-3 pt-3 border-t border-slate-100 text-xs text-slate-400">
+                      <div className="flex items-center gap-4 mt-3 pt-3 border-t border-slate-100 text-xs text-slate-400 flex-wrap">
                         <span>Tone: <span className="text-slate-600 font-medium">{p.tone}</span></span>
-                        <span>Vocabulary: <span className="text-slate-600 font-medium">{p.vocabulary_richness}</span></span>
+                        <span>Vocab: <span className="text-slate-600 font-medium">{p.vocabulary_richness}</span></span>
                         <span>Sentences: <span className="text-slate-600 font-medium">{p.sentence_length}</span></span>
+                        {p.passive_voice_ratio && <span>Passive: <span className="text-slate-600 font-medium">{p.passive_voice_ratio}</span></span>}
+                        {p.hedging_frequency && <span>Hedging: <span className="text-slate-600 font-medium">{p.hedging_frequency}</span></span>}
                       </div>
-                    </motion.div>
+                    </div>
                   )
                 })}
-              </motion.div>
-            )}
+              </div>
+            </motion.div>
+          )}
 
-            {/* ═══ TAB 2: STYLE SHIFT TIMELINE ═══ */}
-            {activeTab === 'timeline' && (
-              <motion.div
-                key="timeline"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="space-y-6"
-              >
-                {/* Timeline Strip */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                  <h3 className="text-sm font-bold text-slate-700 mb-4">Paragraph Cluster Map</h3>
-                  <div className="flex gap-1 overflow-x-auto pb-2">
-                    {paragraphs.map(p => {
-                      const cl = getCluster(p.cluster)
+          {/* ═══════ TAB 2: AI DETECTION (Purple) ═══════ */}
+          {activeTab === 'aidetection' && (
+            <motion.div
+              key="aidetection"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              {!aiDetection ? (
+                <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
+                  <Bot className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                  <h3 className="text-lg font-bold text-slate-700 mb-2">AI Detection Unavailable</h3>
+                  <p className="text-sm text-slate-400">This pipeline failed or wasn't available for this analysis. Try re-analyzing the document.</p>
+                </div>
+              ) : (
+                <>
+                  {/* Header Stats */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col items-center">
+                      <div className="relative w-28 h-28 flex items-center justify-center mb-3">
+                        <svg viewBox="0 0 36 36" className="w-28 h-28 -rotate-90">
+                          <circle cx="18" cy="18" r="16" fill="none" stroke="#f1f5f9" strokeWidth="3" />
+                          <motion.circle
+                            cx="18" cy="18" r="16" fill="none"
+                            stroke={aiDetection.overall_ai_score > 65 ? '#ef4444' : aiDetection.overall_ai_score > 45 ? '#f59e0b' : '#10b981'}
+                            strokeWidth="3" strokeLinecap="round"
+                            strokeDasharray={`${aiDetection.overall_ai_score} ${100 - aiDetection.overall_ai_score}`}
+                            initial={{ strokeDasharray: '0 100' }}
+                            animate={{ strokeDasharray: `${aiDetection.overall_ai_score} ${100 - aiDetection.overall_ai_score}` }}
+                            transition={{ duration: 1.2 }}
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center">
+                          <span className="text-2xl font-black text-slate-900">{aiDetection.overall_ai_score}</span>
+                          <span className="text-[10px] text-slate-400 font-bold">AI Score</span>
+                        </div>
+                      </div>
+                      <div className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
+                        aiDetection.verdict?.includes('🚨') ? 'bg-red-50 text-red-600 border-red-200' :
+                        aiDetection.verdict?.includes('🤖') ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                        aiDetection.verdict?.includes('⚠️') ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                        'bg-emerald-50 text-emerald-600 border-emerald-200'
+                      }`}>{aiDetection.verdict}</div>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col items-center justify-center">
+                      <p className="text-4xl font-black text-slate-900">{aiDetection.ai_percentage || 0}%</p>
+                      <p className="text-xs text-slate-400 font-bold mt-1">Paragraphs Likely AI</p>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-slate-200 p-6 flex flex-col items-center justify-center">
+                      {aiDetection.dominant_ai_tool && aiDetection.dominant_ai_tool !== 'None' ? (
+                        <>
+                          <Bot className="w-10 h-10 text-purple-500 mb-2" />
+                          <p className="text-lg font-black text-slate-900">{aiDetection.dominant_ai_tool}</p>
+                          <p className="text-xs text-slate-400 font-bold mt-1">Likely AI Tool</p>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-10 h-10 text-emerald-500 mb-2" />
+                          <p className="text-lg font-black text-slate-900">No AI Tool</p>
+                          <p className="text-xs text-slate-400 font-bold mt-1">Detected</p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Summary */}
+                  {aiDetection.summary && (
+                    <div className="bg-purple-50/50 rounded-2xl border border-purple-100 p-6">
+                      <p className="text-sm text-purple-800 leading-relaxed">{aiDetection.summary}</p>
+                    </div>
+                  )}
+
+                  {/* Per-paragraph AI Scores */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                      <Bot className="w-4 h-4 text-purple-500" />
+                      Per-Paragraph AI Analysis ({aiDetection.paragraphs?.length || 0})
+                    </h3>
+                    {aiDetection.paragraphs?.map(p => {
+                      const scoreInfo = getAiScoreColor(p.ai_score)
+                      const isExpanded = expandedParagraphs.has(`ai-${p.id}`)
+                      const isSuspicious = aiDetection.most_suspicious_paragraphs?.includes(p.id)
                       return (
                         <div
                           key={p.id}
-                          className={`flex-shrink-0 w-9 h-9 rounded-lg ${cl.dot} flex items-center justify-center transition-transform hover:scale-110`}
-                          title={`¶${p.id} — Style ${p.cluster} (${(p.consistency_score * 100).toFixed(0)}%)`}
+                          className={`bg-white rounded-2xl border p-5 ${isSuspicious ? 'border-purple-300 ring-1 ring-purple-100' : 'border-slate-200'}`}
                         >
-                          <span className="text-xs font-bold text-white">{p.id}</span>
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-400">¶{p.id}</span>
+                              {isSuspicious && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-600">Suspicious</span>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                p.ai_score > 65 ? 'bg-red-100 text-red-700' :
+                                p.ai_score > 45 ? 'bg-amber-100 text-amber-700' :
+                                'bg-emerald-100 text-emerald-700'
+                              }`}>{p.verdict} ({p.ai_score}%)</span>
+                              {p.confidence && (
+                                <span className="text-[10px] text-slate-400 font-bold uppercase">{p.confidence}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* AI score bar */}
+                          <div className="h-2 rounded-full bg-slate-100 overflow-hidden mb-3">
+                            <motion.div
+                              className={`h-full rounded-full ${scoreInfo.bg}`}
+                              initial={{ width: 0 }}
+                              animate={{ width: `${p.ai_score}%` }}
+                              transition={{ duration: 0.6 }}
+                            />
+                          </div>
+
+                          {/* Signals */}
+                          {p.signals_detected?.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-2">
+                              {p.signals_detected.map((s, i) => (
+                                <span key={i} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-50 text-red-600 border border-red-100">
+                                  {s}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {p.human_signals_detected?.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-2">
+                              {p.human_signals_detected.map((s, i) => (
+                                <span key={i} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100">
+                                  {s}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Expandable reasoning */}
+                          <button
+                            onClick={() => toggleExpanded(`ai-${p.id}`)}
+                            className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 mt-2"
+                          >
+                            <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                            {isExpanded ? 'Hide' : 'Show'} reasoning
+                          </button>
+                          {isExpanded && p.reasoning && (
+                            <motion.p
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              className="text-xs text-slate-600 mt-2 p-3 bg-slate-50 rounded-xl leading-relaxed"
+                            >
+                              {p.reasoning}
+                            </motion.p>
+                          )}
                         </div>
                       )
                     })}
                   </div>
-                </div>
+                </>
+              )}
+            </motion.div>
+          )}
 
-                {/* Line Chart */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                  <h3 className="text-sm font-bold text-slate-700 mb-4">Consistency Score Across Paragraphs</h3>
-                  <div className="h-72">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="id"
-                          tick={{ fontSize: 11, fill: '#94a3b8' }}
-                          label={{ value: 'Paragraph', position: 'insideBottom', offset: -5, style: { fontSize: 11, fill: '#94a3b8' } }}
-                        />
-                        <YAxis
-                          domain={[0, 1]}
-                          ticks={[0, 0.2, 0.4, 0.6, 0.8, 1.0]}
-                          tick={{ fontSize: 11, fill: '#94a3b8' }}
-                          label={{ value: 'Score', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#94a3b8' } }}
-                        />
-                        <Tooltip content={<CustomTooltip />} />
-                        <ReferenceLine
-                          y={0.6}
-                          stroke="#ef4444"
-                          strokeDasharray="6 4"
-                          label={{ value: 'Inconsistency Threshold', position: 'right', style: { fontSize: 10, fill: '#ef4444' } }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="consistency_score"
-                          stroke="#6366f1"
-                          strokeWidth={2.5}
-                          dot={(props) => {
-                            const cl = getCluster(props.payload.cluster)
-                            return (
-                              <circle
-                                key={props.key}
-                                cx={props.cx}
-                                cy={props.cy}
-                                r={5}
-                                fill={cl.hex}
-                                stroke="#fff"
-                                strokeWidth={2}
-                              />
-                            )
-                          }}
-                          activeDot={{ r: 7, stroke: '#6366f1', strokeWidth: 2 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+          {/* ═══════ TAB 3: SOURCE TRACING (Orange) ═══════ */}
+          {activeTab === 'sources' && (
+            <motion.div
+              key="sources"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              {!sourceTracing ? (
+                <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
+                  <Globe className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                  <h3 className="text-lg font-bold text-slate-700 mb-2">Source Tracing Unavailable</h3>
+                  <p className="text-sm text-slate-400">This pipeline failed or wasn't available for this analysis. Try re-analyzing the document.</p>
                 </div>
+              ) : (
+                <>
+                  {/* Stitching Banner */}
+                  {sourceTracing.stitching_analysis && (
+                    <div className={`rounded-2xl p-6 border ${
+                      sourceTracing.stitching_analysis.stitching_detected
+                        ? 'bg-red-50 border-red-200'
+                        : sourceTracing.stitching_analysis.verdict?.includes('⚠️')
+                        ? 'bg-amber-50 border-amber-200'
+                        : 'bg-emerald-50 border-emerald-200'
+                    }`}>
+                      <div className="flex items-center gap-3 mb-2">
+                        <Globe className="w-6 h-6" />
+                        <h3 className="text-lg font-black">{sourceTracing.stitching_analysis.verdict}</h3>
+                      </div>
+                      <p className="text-sm leading-relaxed opacity-80">{sourceTracing.stitching_analysis.summary}</p>
+                      <div className="mt-3 flex items-center gap-3">
+                        <span className="text-xs font-bold opacity-60">
+                          Confidence: {sourceTracing.stitching_analysis.confidence} • 
+                          Traced to {sourceTracing.stitching_analysis.distinct_source_count || 0} potential sources
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
-                {/* Shift Points */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                  <h3 className="text-sm font-bold text-slate-700 mb-4">Style Shift Points</h3>
-                  {shiftPoints.length === 0 ? (
-                    <p className="text-sm text-slate-400 italic">No style shifts detected — consistent writing throughout.</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {shiftPoints.map((sp, i) => (
-                        <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
-                          <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <TrendingUp className="w-4 h-4 text-amber-600" />
+                  {/* Traced Paragraphs */}
+                  {sourceTracing.paragraph_traces?.length > 0 ? (
+                    <div className="space-y-4">
+                      <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                        <Search className="w-4 h-4 text-orange-500" />
+                        Source Matches ({sourceTracing.paragraph_traces.length} paragraphs traced)
+                      </h3>
+                      {sourceTracing.paragraph_traces.map((trace, i) => (
+                        <div key={i} className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+                          {/* Paragraph preview */}
+                          <div className="flex items-start gap-3">
+                            <span className="text-xs font-bold text-orange-500 mt-1">¶{trace.paragraph_id}</span>
+                            <p className="text-xs text-slate-500 leading-relaxed italic">{trace.paragraph_preview}</p>
                           </div>
-                          <div>
-                            <p className="text-sm font-semibold text-slate-800">
-                              ¶{sp.id} — Style shifted from{' '}
-                              <span className={getCluster(sp.from).text}>{sp.from}</span>
-                              {' → '}
-                              <span className={getCluster(sp.to).text}>{sp.to}</span>
-                            </p>
-                            {sp.reason && (
-                              <p className="text-xs text-slate-500 mt-1 leading-relaxed">{sp.reason}</p>
-                            )}
+                          <div className="text-[10px] text-slate-400 font-medium">
+                            Search query: <span className="text-slate-600">"{trace.search_query_used}"</span>
                           </div>
+
+                          {/* Semantic Scholar Matches */}
+                          {trace.semantic_scholar_matches?.length > 0 && (
+                            <div>
+                              <p className="text-[11px] font-bold text-indigo-600 mb-2">Semantic Scholar Matches</p>
+                              <div className="space-y-2">
+                                {trace.semantic_scholar_matches.map((paper, j) => (
+                                  <div key={j} className="bg-indigo-50/50 rounded-xl border border-indigo-100 p-3">
+                                    <a href={paper.link} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-indigo-700 hover:underline flex items-center gap-1">
+                                      {paper.title}
+                                      <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                                    </a>
+                                    <p className="text-[10px] text-slate-500 mt-1">{paper.authors}</p>
+                                    <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-400">
+                                      {paper.year && <span>{paper.year}</span>}
+                                      {paper.venue && paper.venue !== 'N/A' && <span>{paper.venue}</span>}
+                                      <span>{paper.citation_count} citations</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* arXiv Matches */}
+                          {trace.arxiv_matches?.length > 0 && (
+                            <div>
+                              <p className="text-[11px] font-bold text-orange-600 mb-2">arXiv Matches</p>
+                              <div className="space-y-2">
+                                {trace.arxiv_matches.map((paper, j) => (
+                                  <div key={j} className="bg-orange-50/50 rounded-xl border border-orange-100 p-3">
+                                    <a href={paper.link} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-orange-700 hover:underline flex items-center gap-1">
+                                      {paper.title}
+                                      <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                                    </a>
+                                    {paper.authors && <p className="text-[10px] text-slate-500 mt-1">{paper.authors}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {trace.semantic_scholar_matches?.length === 0 && trace.arxiv_matches?.length === 0 && (
+                            <p className="text-xs text-slate-400 italic">No matching sources found for this paragraph.</p>
+                          )}
                         </div>
                       ))}
                     </div>
-                  )}
-                </div>
-              </motion.div>
-            )}
-
-            {/* ═══ TAB 3: SUMMARY & VERDICT ═══ */}
-            {activeTab === 'summary' && (
-              <motion.div
-                key="summary"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="space-y-6"
-              >
-                {/* Verdict Banner */}
-                <div className={`rounded-2xl p-6 sm:p-8 border ${getVerdictStyle(analysis.verdict)}`}>
-                  <div className="flex items-center gap-3 mb-2">
-                    <Shield className="w-6 h-6" />
-                    <h2 className="text-xl sm:text-2xl font-black">Verdict</h2>
-                  </div>
-                  <p className="text-lg sm:text-xl font-bold">{analysis.verdict}</p>
-                </div>
-
-                {/* Summary */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center">
-                      <BookOpen className="w-5 h-5 text-indigo-600" />
+                  ) : (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
+                      <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-3" />
+                      <p className="text-sm font-bold text-slate-700">No suspicious paragraphs found for source tracing ✅</p>
+                      <p className="text-xs text-slate-400 mt-1">No paragraphs were flagged, so source tracing was not required.</p>
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900">Forensic Summary</h3>
+                  )}
+                </>
+              )}
+            </motion.div>
+          )}
+
+          {/* ═══════ TAB 4: SUMMARY & VERDICT ═══════ */}
+          {activeTab === 'summary' && (
+            <motion.div
+              key="summary"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              {/* Summary Text */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center">
+                    <BookOpen className="w-5 h-5 text-indigo-600" />
                   </div>
-                  <p className="text-slate-600 leading-relaxed text-[15px]">
-                    {analysis.summary}
-                  </p>
+                  <h3 className="text-lg font-bold text-slate-900">Forensic Summary</h3>
                 </div>
+                <p className="text-slate-600 leading-relaxed text-[15px] mb-4">
+                  {stylometry?.summary || analysis.summary || 'No forensic summary available.'}
+                </p>
+                {aiDetection?.summary && (
+                  <div className="mt-4 pt-4 border-t border-slate-100">
+                    <p className="text-xs font-bold text-purple-600 mb-2">AI Detection Summary</p>
+                    <p className="text-sm text-slate-600 leading-relaxed">{aiDetection.summary}</p>
+                  </div>
+                )}
+              </div>
 
-                {/* Stats Grid */}
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    {
-                      label: 'Integrity Score',
-                      value: `${analysis.integrity_score?.toFixed(1)}%`,
-                      icon: Shield,
-                      color: 'indigo',
-                    },
-                    {
-                      label: 'AI Probability',
-                      value: `${result.ai_percentage !== undefined ? result.ai_percentage + '%' : 'N/A'}`,
-                      icon: Bot,
-                      color: 'rose',
-                    },
-                    {
-                      label: 'Author Count',
-                      value: analysis.author_count,
-                      icon: Users,
-                      color: 'violet',
-                    },
-                    {
-                      label: 'Flagged Paragraphs',
-                      value: flaggedCount,
-                      icon: AlertTriangle,
-                      color: 'amber',
-                    },
-                  ].map((stat, i) => {
-                    const Icon = stat.icon
-                    const colorMap = {
-                      indigo: 'bg-indigo-50 text-indigo-600',
-                      violet: 'bg-violet-50 text-violet-600',
-                      amber: 'bg-amber-50 text-amber-600',
-                      emerald: 'bg-emerald-50 text-emerald-600',
-                    }
-                    return (
-                      <motion.div
-                        key={stat.label}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.1 }}
-                        className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col"
-                      >
-                        <div className={`w-9 h-9 rounded-xl ${colorMap[stat.color]} flex items-center justify-center mb-3`}>
-                          <Icon className="w-4 h-4" />
-                        </div>
-                        <p className="text-2xl font-black text-slate-900 mb-1">{stat.value}</p>
-                        <p className="text-xs text-slate-400 font-medium">{stat.label}</p>
-                      </motion.div>
-                    )
-                  })}
-                </div>
-
-                {/* What This Means */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8">
-                  <h3 className="text-lg font-bold text-slate-900 mb-4">What This Means</h3>
-                  <div className="space-y-3">
-                    {generateInsights().map((insight, i) => (
-                      <div key={i} className="flex items-start gap-3">
-                        <ChevronRight className="w-4 h-4 text-indigo-500 flex-shrink-0 mt-1" />
-                        <p className="text-sm text-slate-600 leading-relaxed">{insight}</p>
+              {/* Stats Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: 'Style Integrity',
+                    value: `${(stylometry?.integrity_score || analysis.integrity_score)?.toFixed(1)}%`,
+                    icon: Shield,
+                    color: 'indigo',
+                  },
+                  {
+                    label: 'AI Score',
+                    value: aiDetection ? `${aiDetection.overall_ai_score}%` : 'N/A',
+                    icon: Bot,
+                    color: 'purple',
+                  },
+                  {
+                    label: 'Style Clusters',
+                    value: stylometry?.cluster_count || clusters.length,
+                    icon: Layers,
+                    color: 'violet',
+                  },
+                  {
+                    label: 'Flagged ¶',
+                    value: flaggedCount,
+                    icon: AlertTriangle,
+                    color: 'amber',
+                  },
+                ].map((stat, i) => {
+                  const Icon = stat.icon
+                  const colorMap = {
+                    indigo: 'bg-indigo-50 text-indigo-600',
+                    purple: 'bg-purple-50 text-purple-600',
+                    violet: 'bg-violet-50 text-violet-600',
+                    amber: 'bg-amber-50 text-amber-600',
+                  }
+                  return (
+                    <motion.div
+                      key={stat.label}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.1 }}
+                      className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col"
+                    >
+                      <div className={`w-9 h-9 rounded-xl ${colorMap[stat.color]} flex items-center justify-center mb-3`}>
+                        <Icon className="w-4 h-4" />
                       </div>
-                    ))}
-                  </div>
+                      <p className="text-2xl font-black text-slate-900 mb-1">{stat.value}</p>
+                      <p className="text-xs text-slate-400 font-medium">{stat.label}</p>
+                    </motion.div>
+                  )
+                })}
+              </div>
+
+              {/* Pipeline Results Summary */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                <h3 className="text-sm font-bold text-slate-700 mb-4">Pipeline Results</h3>
+                <div className="space-y-3">
+                  {[
+                    { label: 'Stylometric Analysis', status: stylometry ? 'complete' : 'unavailable', verdict: stylometry?.verdict, color: 'indigo' },
+                    { label: 'AI Content Detection', status: aiDetection ? 'complete' : 'unavailable', verdict: aiDetection?.verdict, color: 'purple' },
+                    { label: 'Source Tracing', status: sourceTracing ? 'complete' : 'unavailable', verdict: sourceTracing?.stitching_analysis?.verdict, color: 'orange' },
+                  ].map((p, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
+                      <div className="flex items-center gap-3">
+                        {p.status === 'complete' ? (
+                          <CheckCircle2 className={`w-4 h-4 text-${p.color}-500`} />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-slate-400" />
+                        )}
+                        <span className="text-sm font-medium text-slate-700">{p.label}</span>
+                      </div>
+                      <span className={`text-xs font-bold ${p.status === 'complete' ? 'text-slate-600' : 'text-slate-400'}`}>
+                        {p.verdict || 'Unavailable'}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </main>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   )

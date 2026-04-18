@@ -10,9 +10,10 @@ import { supabase } from '../lib/supabaseClient'
 
 function getVerdictStyle(verdict) {
   if (!verdict) return { bg: 'bg-slate-50', text: 'text-slate-500', border: 'border-slate-200' }
+  if (verdict.includes('HIGH RISK') || verdict.includes('🚨')) return { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-200' }
+  if (verdict.includes('MODERATE') || verdict.includes('⚠️')) return { bg: 'bg-amber-50', text: 'text-amber-600', border: 'border-amber-200' }
   if (verdict.includes('🤖')) return { bg: 'bg-purple-50', text: 'text-purple-600', border: 'border-purple-200' }
-  if (verdict.includes('🚨')) return { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-200' }
-  if (verdict.includes('⚠️')) return { bg: 'bg-amber-50', text: 'text-amber-600', border: 'border-amber-200' }
+  if (verdict.includes('LOW RISK') || verdict.includes('✅')) return { bg: 'bg-emerald-50', text: 'text-emerald-600', border: 'border-emerald-200' }
   return { bg: 'bg-emerald-50', text: 'text-emerald-600', border: 'border-emerald-200' }
 }
 
@@ -97,7 +98,7 @@ export default function DashboardPage() {
     ? (analyses.reduce((sum, a) => sum + (a.integrity_score || 0), 0) / totalDocuments).toFixed(1)
     : '—'
   const flaggedDocs = analyses.filter(a =>
-    a.verdict?.includes('⚠️') || a.verdict?.includes('🚨')
+    a.verdict?.includes('⚠️') || a.verdict?.includes('🚨') || a.verdict?.includes('HIGH RISK') || a.verdict?.includes('MODERATE')
   ).length
 
   return (
@@ -216,7 +217,9 @@ export default function DashboardPage() {
             >
               {analyses.map((a, i) => {
                 const verdictStyle = getVerdictStyle(a.verdict)
-                const flaggedCount = a.result?.paragraphs?.filter(p => p.flagged)?.length || 0
+                const styloParagraphs = a.result?.stylometry?.paragraphs || a.result?.paragraphs || []
+                const flaggedCount = styloParagraphs.filter(p => p.flagged)?.length || 0
+                const aiScore = a.result?.aiDetection?.overall_ai_score
 
                 return (
                   <motion.div
@@ -273,15 +276,20 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Meta Row */}
-                    <div className="flex items-center gap-4 text-xs text-slate-400 mb-5">
+                    <div className="flex items-center gap-4 text-xs text-slate-400 mb-5 flex-wrap">
                       <span className="flex items-center gap-1">
                         <Users className="w-3.5 h-3.5" />
-                        {a.author_count} author{a.author_count !== 1 ? 's' : ''}
+                        {a.author_count} cluster{a.author_count !== 1 ? 's' : ''}
                       </span>
                       {flaggedCount > 0 && (
                         <span className="flex items-center gap-1 text-amber-500">
                           <AlertTriangle className="w-3.5 h-3.5" />
                           {flaggedCount} flagged
+                        </span>
+                      )}
+                      {aiScore !== undefined && (
+                        <span className={`flex items-center gap-1 ${aiScore > 65 ? 'text-red-500' : aiScore > 45 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                          AI: {aiScore}%
                         </span>
                       )}
                     </div>
