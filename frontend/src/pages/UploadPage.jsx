@@ -182,13 +182,13 @@ export default function UploadPage() {
         ? rawParagraphs.slice(referencesStartIdx).join('\n\n')
         : ''
 
-      // Filter out paragraphs under 50 words and limit to 40
+      // Filter out paragraphs under 30 words and limit to 40
       const cleanParagraphs = bodyParagraphs
-        .filter(p => countWords(p) >= 50)
+        .filter(p => countWords(p) >= 30)
         .slice(0, 40)
 
       if (cleanParagraphs.length === 0) {
-        throw new Error('Could not extract enough text from the PDF. Please ensure the file contains selectable text with at least 50 words per paragraph.')
+        throw new Error('Could not extract enough text from the PDF. Please ensure the file contains selectable text with at least 30 words per paragraph.')
       }
 
       // Number sequentially
@@ -203,78 +203,56 @@ export default function UploadPage() {
 
       markStepComplete(2)
 
-      // ── Steps 3-5: Run all 3 pipelines in parallel ──
-      const userMessage = JSON.stringify(cleanParagraphs)
-
+      // ── Steps 3-5: Run unified backend analysis ──
       // Mark all pipeline steps as active
       markStepActive(3)
       markStepActive(4)
       markStepActive(5)
 
-      // Pipeline 1: Stylometric Analysis (Edge Function handles model routing)
-      const runStylometryPipeline = async () => {
-        setPipelineStatus(prev => ({ ...prev, stylometry: 'running' }))
-        try {
-          const result = await runStylometryAnalysis(userMessage);
-          setPipelineStatus(prev => ({ ...prev, stylometry: 'done' }))
-          markStepComplete(3)
-          return result;
-        } catch (err) {
-          setPipelineStatus(prev => ({ ...prev, stylometry: 'failed' }))
-          throw err;
+      setPipelineStatus(prev => ({ ...prev, stylometry: 'running', aiDetection: 'running', sourceTracing: 'running' }));
+      let analysisData;
+
+      try {
+        const { data, error } = await supabase.functions.invoke('analyze', {
+          body: { action: 'analyze', paragraphs: cleanParagraphs },
+        });
+
+        if (error) {
+          throw new Error(error.message);
         }
-      };
-
-      // Pipeline 2: AI Detection
-      const runAIDetectionPipeline = async () => {
-        setPipelineStatus(prev => ({ ...prev, aiDetection: 'running' }))
-        try {
-          const result = await runAIDetection(cleanParagraphs);
-          setPipelineStatus(prev => ({ ...prev, aiDetection: 'done' }))
-          markStepComplete(4)
-          return result;
-        } catch (err) {
-          setPipelineStatus(prev => ({ ...prev, aiDetection: 'failed' }))
-          throw err;
+        if (!data || !data.success) {
+          throw new Error(data?.error || 'Empty response from Edge Function');
         }
-      };
 
-      // Pipeline 3: Source Tracing
-      const runSourceTracingPipeline = async () => {
-        setPipelineStatus(prev => ({ ...prev, sourceTracing: 'running' }))
-        try {
-          const result = await runSourceTracing(numberedParagraphs.slice(0, 5));
-          setPipelineStatus(prev => ({ ...prev, sourceTracing: 'done' }))
-          markStepComplete(5)
-          return result;
-        } catch (err) {
-          setPipelineStatus(prev => ({ ...prev, sourceTracing: 'failed' }))
-          throw err;
-        }
-      };
+        analysisData = data;
+        
+        setPipelineStatus(prev => ({ 
+          ...prev, 
+          stylometry: analysisData.stylometry ? 'done' : 'failed', 
+          aiDetection: analysisData.aiDetection ? 'done' : 'failed', 
+          sourceTracing: analysisData.sourceTracing ? 'done' : 'failed' 
+        }));
 
-      // Run all 3 pipelines in parallel
-      const [stylometrySettled, aiDetectionSettled, sourceTracingSettled] = await Promise.allSettled([
-        runStylometryPipeline(),
-        runAIDetectionPipeline(),
-        runSourceTracingPipeline(),
-      ]);
+        if (analysisData.stylometry) markStepComplete(3);
+        if (analysisData.aiDetection) markStepComplete(4);
+        if (analysisData.sourceTracing) markStepComplete(5);
 
-      const stylometryResult = stylometrySettled.status === 'fulfilled' ? stylometrySettled.value : null;
-      const aiDetectionResult = aiDetectionSettled.status === 'fulfilled' ? aiDetectionSettled.value : null;
-      const sourceTracingResult = sourceTracingSettled.status === 'fulfilled' ? sourceTracingSettled.value : null;
+      } catch (err) {
+        setPipelineStatus(prev => ({ ...prev, stylometry: 'failed', aiDetection: 'failed', sourceTracing: 'failed' }));
+        throw new Error('Pipeline analysis crashed: ' + err.message);
+      }
 
       // Log pipeline results
-      console.log('[Pipeline Results]', {
-        stylometry: stylometrySettled.status,
-        aiDetection: aiDetectionSettled.status,
-        sourceTracing: sourceTracingSettled.status,
-      });
+      console.log('[Pipeline Results] Unified Edge Function Response:', analysisData);
 
-      // At least stylometry must succeed
-      if (!stylometryResult) {
-        throw new Error('Stylometric analysis failed. Please try again.')
-      }
+      const stylometryResult = analysisData.stylometry;
+      const aiDetectionResult = analysisData.aiDetection;
+      const sourceTracingResult = analysisData.sourceTracing;
+
+      const warnings = analysisData.warnings || [];
+      if (!stylometryResult) warnings.push("Stylometric analysis unavailable or incomplete");
+      if (!aiDetectionResult) warnings.push("AI detection unavailable");
+      if (!sourceTracingResult || !sourceTracingResult.paragraph_traces || sourceTracingResult.paragraph_traces.length === 0) warnings.push("Source tracing returned no hits or unavailable");
 
       // ── Compute Combined Verdict ──
       const stylometryScore = stylometryResult?.integrity_score ?? 100;
@@ -285,13 +263,13 @@ export default function UploadPage() {
 
       let combinedVerdict, combinedRisk;
       if (aiScore > 65 || stitchingDetected || stylometryScore < 50) {
-        combinedVerdict = '🚨 HIGH RISK — AI Generated Content + Stitched From Multiple Sources';
+        combinedVerdict = '🚨 HIGH RISK — Suspicious Content Detected';
         combinedRisk = 'high';
       } else if (aiScore > 45 || stylometryScore < 75 || (sourceMatchCount > 0 && stitchingConfidence === 'low')) {
-        combinedVerdict = '⚠️ MODERATE RISK — Style Inconsistencies Detected';
+        combinedVerdict = '⚠️ MODERATE RISK — Flagged Inconsistencies';
         combinedRisk = 'moderate';
       } else {
-        combinedVerdict = '✅ LOW RISK — Document Appears Original and Consistent';
+        combinedVerdict = '✅ LOW RISK — Document Appears Original';
         combinedRisk = 'low';
       }
 
@@ -299,13 +277,14 @@ export default function UploadPage() {
       markStepActive(6)
 
       const combinedResult = {
-        stylometry: stylometryResult,
-        aiDetection: aiDetectionResult,
-        sourceTracing: sourceTracingResult,
+        stylometry: stylometryResult || { integrity_score: 100, cluster_count: 1, paragraphs: [] },
+        aiDetection: aiDetectionResult || { overall_ai_score: 0, paragraphs: [] },
+        sourceTracing: sourceTracingResult || { fallback: true, paragraph_traces: [] },
+        warnings: warnings,
         combinedVerdict,
         combinedRisk,
         // Legacy fields for backward compat
-        paragraphs: stylometryResult?.paragraphs,
+        paragraphs: stylometryResult?.paragraphs || [],
       };
 
       const { data: insertData, error: insertError } = await supabase
@@ -333,6 +312,7 @@ export default function UploadPage() {
         combinedRisk,
         integrity_score: stylometryScore,
         ai_score: aiScore,
+        warnings,
       })
       setPhase('done')
 
@@ -692,12 +672,23 @@ export default function UploadPage() {
               </motion.div>
 
               <h2 className="text-2xl font-black text-slate-900 mb-2">Analysis Complete</h2>
-              <p className="text-slate-500 mb-6">Your 3-pipeline forensic report is ready.</p>
+              <p className="text-slate-500 mb-6">Your forensic report is ready.</p>
 
               <div className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full border text-sm font-bold mb-8 ${getVerdictColor(result.verdict)}`}>
                 <Sparkles className="w-4 h-4" />
                 {result.verdict}
               </div>
+
+              {result.warnings && result.warnings.length > 0 && (
+                 <div className="mb-6 bg-amber-50 rounded-xl p-4 border border-amber-200 text-left mx-auto max-w-md">
+                    <p className="text-sm font-semibold text-amber-800 mb-1 flex items-center gap-2">
+                       <AlertCircle className="w-4 h-4" /> Partial Results Displayed
+                    </p>
+                    <ul className="list-disc pl-5 text-amber-700 text-sm">
+                       {result.warnings.map((w, idx) => <li key={idx}>{w}</li>)}
+                    </ul>
+                 </div>
+              )}
 
               {/* Quick Stats */}
               <div className="grid grid-cols-2 gap-4 mb-8">

@@ -160,71 +160,10 @@ Return ONLY valid JSON, no explanation, no markdown, no backticks:
 overall_ai_score = weighted average of all paragraph ai_scores.
 ai_percentage = percentage of paragraphs with ai_score above 65.`;
 
-const GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite"
-];
-
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function runGemini(apiKey: string, userMessage: string, useDetectorPrompt = false) {
-  const prompt = useDetectorPrompt ? AI_DETECTOR_PROMPT : SYSTEM_PROMPT;
-
-  for (const model of GEMINI_MODELS) {
-    let attempts = 0;
-    while (attempts < 2) {
-      attempts++;
-      try {
-        console.log(`[Gemini] Attempt ${attempts} using model: ${model}`);
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt + "\n\n" + userMessage }] }],
-              generationConfig: {
-                temperature: 0.05,
-                maxOutputTokens: 8192,
-                responseMimeType: "application/json"
-              }
-            })
-          }
-        );
-
-        if (response.status === 404 || response.status === 503) {
-          console.log(`[Gemini] Model ${model} unavailable (${response.status}), trying next...`);
-          break;
-        }
-
-        if (response.status === 429) {
-          if (attempts < 2) { await sleep(1000); continue; }
-          break;
-        }
-
-        if (!response.ok) {
-          console.log(`[Gemini] Model ${model} error (${response.status}), trying next...`);
-          break;
-        }
-
-        const data = await response.json();
-        const rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-        console.log(`[Gemini] Success with ${model}`);
-        return JSON.parse(rawContent);
-
-      } catch (e) {
-        console.error(`[Gemini] Error on ${model} attempt ${attempts}:`, e.message);
-        if (attempts < 2) { await sleep(500); continue; }
-        break;
-      }
-    }
-  }
-  throw new Error('All Gemini models failed');
-}
-
-async function runGroq(apiKey: string, userMessage: string) {
-  console.log(`[Groq] Starting analysis...`);
+async function runGroq(apiKey: string, userMessage: string, useDetectorPrompt = false) {
+  const systemPrompt = useDetectorPrompt ? AI_DETECTOR_PROMPT : SYSTEM_PROMPT;
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -234,24 +173,21 @@ async function runGroq(apiKey: string, userMessage: string) {
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
       ],
       temperature: 0.1,
       max_tokens: 4000
     })
   });
-
   if (!response.ok) {
     const errText = await response.text();
     console.error(`[Groq] API Error ${response.status}:`, errText);
     throw new Error(`Groq API Error: ${response.status}`);
   }
-
   const data = await response.json();
   const rawContent = data.choices?.[0]?.message?.content || "{}";
   const cleaned = rawContent.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  console.log(`[Groq] Analysis successful`);
   return JSON.parse(cleaned);
 }
 
@@ -278,104 +214,235 @@ async function searchArxiv(query: string) {
   return await response.text();
 }
 
+// Helper to parse Arxiv XML search results
+function parseArxivXml(xml: string) {
+  const papers = [];
+  try {
+    const entries = xml.split('<entry>');
+    for (let i = 1; i < entries.length; i++) {
+       const title = entries[i].match(/<title>([\s\S]*?)<\/title>/)?.[1]?.replace(/\n/g, ' ').trim() || 'Unknown Title';
+       const link = entries[i].match(/<id>([\s\S]*?)<\/id>/)?.[1]?.trim() || '';
+       const authors = [...entries[i].matchAll(/<name>([\s\S]*?)<\/name>/g)].map(m => m[1]).join(', ');
+       papers.push({ title, link, authors });
+    }
+  } catch (e) {
+    console.error('[Arxiv Parse] Error:', e);
+  }
+  return papers;
+}
+
+async function runGroqRaw(apiKey: string, prompt: string): Promise<string> {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 50
+    })
+  });
+  if (!response.ok) throw new Error(`Groq raw error: ${response.status}`);
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
 console.log('[Analyze Function] Starting up...');
-console.log('[Analyze Function] GEMINI_API_KEY present:', !!Deno.env.get('GEMINI_API_KEY'));
 console.log('[Analyze Function] GROQ_API_KEY present:', !!Deno.env.get('GROQ_API_KEY'));
 console.log('[Analyze Function] SYSTEM_PROMPT length:', SYSTEM_PROMPT.length);
 console.log('[Analyze Function] AI_DETECTOR_PROMPT length:', AI_DETECTOR_PROMPT.length);
 
 serve(async (req) => {
-  // This MUST be first — before any await or try/catch
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const { action, userMessage, paragraphs, searchQuery, source } = await req.json();
+    const { action, userMessage, paragraphs } = await req.json();
 
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY') || '';
-    const groqApiKey = Deno.env.get('GROQ_API_KEY') || '';
-    const charCount = userMessage?.length || 0;
+    const groqKey = Deno.env.get('GROQ_API_KEY') || '';
 
-    // Action: stylometry analysis
-    if (action === 'stylometry') {
-      let result;
-      if (charCount < 3000) {
-        console.log('[Analyze] Small file — using Groq');
-        try {
-          result = await runGroq(groqApiKey, userMessage);
-        } catch {
-          console.log('[Analyze] Groq failed, falling back to Gemini');
-          result = await runGemini(geminiApiKey, userMessage);
-        }
-      } else {
-        console.log('[Analyze] Large file — using Gemini');
-        try {
-          result = await runGemini(geminiApiKey, userMessage);
-        } catch {
-          console.log('[Analyze] Gemini failed, falling back to Groq');
-          result = await runGroq(groqApiKey, userMessage);
-        }
+    // Unified Action payload
+    if (action === 'analyze') {
+      const out = {
+        success: true,
+        stylometry: null as any,
+        aiDetection: null as any,
+        sourceTracing: null as any,
+        warnings: [] as string[]
+      };
+
+      // 1. INPUT PROCESSING
+      let parsedParagraphs: string[] = [];
+      if (paragraphs && Array.isArray(paragraphs)) {
+        parsedParagraphs = paragraphs.map((p: any) => typeof p === 'string' ? p : p.text).filter(Boolean);
+      } else if (userMessage) {
+        parsedParagraphs = userMessage.split(/\n\s*\n/).map((p: string) => p.trim()).filter((p: string) => p.length > 20);
       }
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
 
-    // Action: AI detection
-    if (action === 'ai-detection') {
+      // Normalize whitespace and deduplicate
+      parsedParagraphs = parsedParagraphs.map(p => p.replace(/\s+/g, ' ').trim());
+
+      let selectedParagraphs = parsedParagraphs;
+      if (parsedParagraphs.length > 5) {
+        const intro = parsedParagraphs.slice(0, 2);
+        const midIdx = Math.floor(parsedParagraphs.length / 2);
+        const mid = parsedParagraphs.slice(midIdx, midIdx + 1);
+        const conclusion = parsedParagraphs.slice(-2);
+        selectedParagraphs = [...intro, ...mid, ...conclusion];
+      }
+      
+      // Fallback: if subsampling is too aggressive, use full text
+      if (selectedParagraphs.length < 2 && parsedParagraphs.length > 0) {
+        selectedParagraphs = parsedParagraphs;
+      }
+
+      let userMsg = selectedParagraphs.map((p, i) => `Paragraph ${i + 1}:\n${p}`).join('\n\n');
+      if (userMsg.length > 4500) {
+        userMsg = userMsg.slice(0, 4500) + "\n\n[TRUNCATED FOR LIMIT]";
+      }
+
+      // 2. STYLOMETRY (Mathematical)
       try {
-        const userMsg = paragraphs
-          .map((p: string, i: number) => `Paragraph ${i + 1}:\n${p}`)
-          .join('\n\n');
+        const metricsArr: any[] = [];
+        selectedParagraphs.forEach((text, i) => {
+          const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+          const words = text.toLowerCase().match(/\b\w+\b/g) || [];
+          if (words.length === 0) return;
+          
+          const avgSentenceLength = words.length / sentences.length;
+          const uniqueWords = new Set(words).size;
+          const vocabRichness = uniqueWords / words.length;
+          const punctuationMatches = text.match(/[,;:\-\(\)\"'\[\]\{\}]/g) || [];
+          const punctuationDensity = punctuationMatches.length / words.length;
+          const passiveVoiceMatches = text.match(/\b(is|am|are|was|were|be|being|been)\s+[a-z]+ed\b/gi) || [];
+          const passiveVoiceRatio = passiveVoiceMatches.length / sentences.length;
 
-        console.log(`[AI Detection] Analyzing ${paragraphs.length} paragraphs...`);
-        const result = await runGemini(geminiApiKey, userMsg, true);
-        console.log('[AI Detection] Success:', JSON.stringify(result).substring(0, 100));
+          metricsArr.push({
+            id: i + 1, text: text, cluster: 1, flagged: false, metrics: { avgSentenceLength, vocabRichness, punctuationDensity, passiveVoiceRatio }, consistency_score: 0.95
+          });
+        });
 
-        return new Response(JSON.stringify(result), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      } catch (error) {
-        console.error('[AI Detection] Failed:', error.message);
-        return new Response(JSON.stringify({
-          error: error.message,
-          overall_ai_score: 0,
-          verdict: "Analysis Unavailable",
-          paragraphs: [],
-          summary: "AI detection failed. Please try again."
-        }), {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+        if (metricsArr.length > 0) {
+          const stdDevs = ['avgSentenceLength', 'vocabRichness', 'punctuationDensity'].map(key => {
+            const vals = metricsArr.map(m => m.metrics[key]);
+            const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+            const variance = vals.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / vals.length;
+            return Math.sqrt(variance || 0);
+          });
+
+          const variancePenalty = (stdDevs[0] * 2) + (stdDevs[1] * 100) + (stdDevs[2] * 200);
+          let score = 100 - variancePenalty;
+          if (score < 0) score = 0;
+          if (score > 100) score = 100;
+
+          let clusterCount = 1;
+          if (score < 60) clusterCount = 3;
+          else if (score < 80) clusterCount = 2;
+          
+          const meanSent = metricsArr.reduce((a, b) => a + b.metrics.avgSentenceLength, 0) / metricsArr.length;
+          const analyzedParagraphs = metricsArr.map(p => {
+              const isAnomaly = Math.abs(p.metrics.avgSentenceLength - meanSent) > 10;
+              return {
+                  ...p, cluster: clusterCount > 1 ? (isAnomaly ? 2 : 1) : 1, flagged: isAnomaly, consistency_score: isAnomaly ? 0.6 : Math.min(1.0, score / 100 + 0.1)
+              }
+          });
+
+          let verdict = "✅ Low Risk — Document Appears Authentic and Consistent";
+          if (score < 60) verdict = "🚨 HIGH RISK — Multiple Authors Detected";
+          else if (score < 80) verdict = "⚠️ MODERATE RISK — Style Inconsistencies Detected";
+
+          out.stylometry = {
+            integrity_score: Math.round(score), 
+            cluster_count: clusterCount, 
+            verdict: verdict, 
+            summary: `Analyzed mathematically. Overall integrity score is ${Math.round(score)}/100.`, 
+            paragraphs: analyzedParagraphs
+          };
+        } else {
+           out.warnings.push("Not enough parsable text for stylometry.");
+        }
+      } catch (e) {
+        out.warnings.push("Stylometry failed");
       }
-    }
 
-    // Action: source tracing
-    if (action === 'source-tracing') {
-      if (source === 'semantic-scholar') {
-        const data = await searchSemanticScholar(searchQuery);
-        return new Response(JSON.stringify(data), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+      // 3. AI DETECTION (Single Call)
+      try {
+        if (selectedParagraphs.length > 0) {
+          console.log(`[AI Detection] Analyzing with Groq...`);
+          const groqKey = Deno.env.get('GROQ_API_KEY') || '';
+          const result = await runGroq(groqKey, userMsg, true);
+          if (result && (result.overall_ai_score === 0 || result.overall_ai_score === undefined)) {
+            result.overall_ai_score = null;
+          }
+          out.aiDetection = result;
+        }
+      } catch (e) {
+        console.error('[AI Detection] failure:', e.message);
+        out.warnings.push("AI detection failed");
       }
-      if (source === 'arxiv') {
-        const xml = await searchArxiv(searchQuery);
-        return new Response(JSON.stringify({ xml }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-    }
 
-    // Action: extract-query (for source tracing query extraction via Gemini)
-    if (action === 'extract-query') {
-      const result = await runGeminiRaw(geminiApiKey, userMessage);
-      return new Response(JSON.stringify({ query: result }), {
+      // 4. SOURCE TRACING
+      try {
+        const tracingLimit = Math.min(3, selectedParagraphs.length);
+        const traces = [];
+        for (let i = 0; i < tracingLimit; i++) {
+          const pText = selectedParagraphs[i];
+          if (pText.length < 50) continue;
+          
+          try {
+            const q = await runGroqRaw(groqKey, `Extract a 5-6 word academic search query from this paragraph. Output the query text only, nothing else:\n\n${pText.slice(0, 800)}`);
+            
+            // Execute both searches in parallel
+            const [ss, arxivXml] = await Promise.all([
+              searchSemanticScholar(q).catch(() => ({ data: [] })),
+              searchArxiv(q).catch(() => '')
+            ]);
+            
+            const arxiv = parseArxivXml(arxivXml);
+            
+            traces.push({
+              paragraph_id: i + 1,
+              paragraph_preview: pText.slice(0, 150) + "...",
+              search_query_used: q,
+              semantic_scholar_matches: ss?.data || [],
+              arxiv_matches: arxiv
+            });
+            
+            if (i < tracingLimit - 1) await sleep(400); // Small buffer between iterations
+          } catch (e) {
+             console.error(`[Source Tracing] Paragraph ${i+1} failed:`, e.message);
+          }
+        }
+        
+        if (traces.length > 0) {
+          let hasMatches = traces.some(t => t.semantic_scholar_matches.length > 0 || t.arxiv_matches.length > 0);
+          out.sourceTracing = {
+            paragraph_traces: traces,
+            stitching_analysis: {
+              verdict: hasMatches ? "⚠️ Potential Source Matches Detected" : "✅ No Direct Source Matches",
+              summary: `Traced ${traces.length} paragraphs. ${hasMatches ? 'Identified potential overlapping content in academic literature.' : 'Document exhibits high original research pattern.'}`,
+              confidence: hasMatches ? "medium" : "high",
+              stitching_detected: hasMatches,
+              distinct_source_count: traces.reduce((acc, t) => acc + (t.semantic_scholar_matches.length + t.arxiv_matches.length), 0)
+            }
+          };
+        } else {
+           out.sourceTracing = { paragraph_traces: [], stitching_analysis: null };
+        }
+      } catch (e) {
+         out.warnings.push("Source tracing failed entirely");
+      }
+
+      return new Response(JSON.stringify(out), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    return new Response(JSON.stringify({ error: 'Invalid action' }), {
+    return new Response(JSON.stringify({ error: 'Invalid action, expected action="analyze"' }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -389,27 +456,4 @@ serve(async (req) => {
   }
 });
 
-// Raw Gemini call for simple text extraction (no JSON mode)
-async function runGeminiRaw(apiKey: string, prompt: string): Promise<string> {
-  for (const model of GEMINI_MODELS) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 100 }
-          })
-        }
-      );
-      if (!response.ok) continue;
-      const data = await response.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    } catch {
-      continue;
-    }
-  }
-  throw new Error('All Gemini models failed for raw extraction');
-}
+

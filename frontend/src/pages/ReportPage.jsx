@@ -270,7 +270,7 @@ export default function ReportPage() {
               >
                 <Icon className="w-4 h-4" />
                 {tab.label}
-                {tab.id === 'aidetection' && aiDetection && (
+                {tab.id === 'aidetection' && aiDetection && aiDetection.overall_ai_score != null && (
                   <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
                     aiDetection.overall_ai_score > 65 ? 'bg-red-100 text-red-600' :
                     aiDetection.overall_ai_score > 45 ? 'bg-amber-100 text-amber-600' :
@@ -730,7 +730,7 @@ export default function ReportPage() {
                   },
                   {
                     label: 'AI Score',
-                    value: aiDetection ? `${aiDetection.overall_ai_score}%` : 'N/A',
+                    value: aiDetection?.overall_ai_score != null ? `${aiDetection.overall_ai_score}%` : 'N/A',
                     icon: Bot,
                     color: 'purple',
                   },
@@ -781,7 +781,7 @@ export default function ReportPage() {
                     { label: 'AI Content Detection', status: aiDetection ? 'complete' : 'unavailable', verdict: aiDetection?.verdict, color: 'purple' },
                     { label: 'Source Tracing', status: sourceTracing ? 'complete' : 'unavailable', verdict: sourceTracing?.stitching_analysis?.verdict, color: 'orange' },
                   ].map((p, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
+                    <div key={p.label || i} className="flex items-center justify-between p-3 rounded-xl bg-slate-50">
                       <div className="flex items-center gap-3">
                         {p.status === 'complete' ? (
                           <CheckCircle2 className={`w-4 h-4 text-${p.color}-500`} />
